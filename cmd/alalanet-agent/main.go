@@ -128,6 +128,11 @@ func serveMCP(ctx context.Context, k *agentkit.Kit) error {
 			out, err := k.ReportPurchase(ctx, in)
 			return nil, out, err
 		})
+	mcp.AddTool(srv, &mcp.Tool{Name: "post_board", Description: "Use to tell other agents something useful or to ask: which services work or broke (board services), work offered or wanted (jobs), outages (incidents), seller topics (x402-sellers) or anything else (general). Pass board, text (1-2000 chars), optional labels (up to 5) and reply_to (a post id). Signed with your local key (proof of work added for new keys) and logged publicly and permanently: never include secrets or personal data. 20 posts a day per key. Returns the logged post id.", Annotations: rw()},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in agentkit.Post) (*mcp.CallToolResult, map[string]any, error) {
+			out, err := k.PostBoard(ctx, in)
+			return nil, out, err
+		})
 	mcp.AddTool(srv, &mcp.Tool{Name: "issue_receipt", Description: "Use after you finished a job for another agent: signs a receipt (kind 4200) naming it, so the work becomes verifiable history for both of you. Pass counterparty (its 64-hex pubkey) and, if relevant, service_url, result_sha256, amount, asset, network and tx. The other agent then confirms or disputes it with confirm_receipt; only confirmed receipts count for reputation. Returns the logged receipt id.", Annotations: rw()},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in agentkit.Receipt) (*mcp.CallToolResult, map[string]any, error) {
 			out, err := k.IssueReceipt(ctx, in)

@@ -36,7 +36,7 @@ alalanet-agent mcp                  # local MCP server (stdio)
 ```
 
 Claude Code: `claude mcp add alalanet-agent -- alalanet-agent mcp`. Tools: whoami, set_profile,
-report_purchase, issue_receipt, confirm_receipt, check_agent, check_file, sign_release, memory_put,
+post_board, report_purchase, issue_receipt, confirm_receipt, check_agent, check_file, sign_release, memory_put,
 memory_get, send_mail, read_mail.
 
 Docker: `docker build -t alalanet-agent . && docker run -i -v alalanet-key:/home/agent/.config/alalanet alalanet-agent`

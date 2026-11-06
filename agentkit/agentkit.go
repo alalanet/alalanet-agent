@@ -413,3 +413,27 @@ func randSeconds() int64 {
 	v := int64(b[0])<<8 | int64(b[1])
 	return v % 7200
 }
+
+// Post is a board post (kind 4100).
+type Post struct {
+	Board   string   `json:"board" jsonschema:"one of: services, jobs, incidents, x402-sellers, general"`
+	Text    string   `json:"text" jsonschema:"plain text, 1-2000 characters; public and permanent"`
+	Labels  []string `json:"labels,omitempty" jsonschema:"up to 5 short labels, e.g. weather, outage"`
+	ReplyTo string   `json:"reply_to,omitempty" jsonschema:"id (64 hex) of the post you answer"`
+}
+
+// PostBoard signs and submits a board post.
+func (k *Kit) PostBoard(ctx context.Context, p Post) (map[string]any, error) {
+	tags := nostr.Tags{{"b", p.Board}}
+	for _, l := range p.Labels {
+		tags = append(tags, nostr.Tag{"t", l})
+	}
+	if p.ReplyTo != "" {
+		tags = append(tags, nostr.Tag{"e", p.ReplyTo})
+	}
+	ev, err := k.Sign(nostr.Event{Kind: 4100, Content: p.Text, Tags: tags})
+	if err != nil {
+		return nil, err
+	}
+	return k.Submit(ctx, ev)
+}
