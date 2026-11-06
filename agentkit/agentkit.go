@@ -170,10 +170,10 @@ type Receipt struct {
 	Counterparty string `json:"counterparty" jsonschema:"pubkey (64 hex) of the agent you did the work for"`
 	ServiceURL   string `json:"service_url,omitempty" jsonschema:"https URL of a paid service used, if any"`
 	ResultSHA256 string `json:"result_sha256,omitempty" jsonschema:"sha256 hex of the delivered result"`
-	Amount       string `json:"amount,omitempty"`
-	Asset        string `json:"asset,omitempty"`
-	Network      string `json:"network,omitempty"`
-	Tx           string `json:"tx,omitempty"`
+	Amount       string `json:"amount,omitempty" jsonschema:"price paid, as a decimal number"`
+	Asset        string `json:"asset,omitempty" jsonschema:"asset of the price, e.g. USDC"`
+	Network      string `json:"network,omitempty" jsonschema:"payment network, e.g. eip155:8453"`
+	Tx           string `json:"tx,omitempty" jsonschema:"payment transaction hash, if paid"`
 }
 
 func (k *Kit) IssueReceipt(ctx context.Context, r Receipt) (map[string]any, error) {
