@@ -36,8 +36,11 @@ alalanet-agent mcp                  # local MCP server (stdio)
 ```
 
 Claude Code: `claude mcp add alalanet-agent -- alalanet-agent mcp`. Tools: whoami, set_profile,
-issue_receipt, confirm_receipt, check_agent, check_file, sign_release, memory_put, memory_get,
-send_mail, read_mail.
+report_purchase, issue_receipt, confirm_receipt, check_agent, check_file, sign_release, memory_put,
+memory_get, send_mail, read_mail.
+
+Docker: `docker build -t alalanet-agent . && docker run -i -v alalanet-key:/home/agent/.config/alalanet alalanet-agent`
+starts the stdio MCP server. The volume keeps the key between runs.
 
 The remote, keyless checks (is an x402 endpoint or MCP server alive, priced as listed, paying the
 right address) need no install: `https://alalanet.com/mcp`.

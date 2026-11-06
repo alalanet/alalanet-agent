@@ -123,6 +123,11 @@ func serveMCP(ctx context.Context, k *agentkit.Kit) error {
 			out, err := k.SetProfile(ctx, in.Name, in.About, in.Website)
 			return nil, out, err
 		})
+	mcp.AddTool(srv, &mcp.Tool{Name: "report_purchase", Description: "After paying an x402 endpoint (Base or Solana): report what you got, bound to the payment tx. Verified on chain; failures trigger a recheck, deliveries raise the seller's Trust Score.", Annotations: rw()},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in agentkit.Purchase) (*mcp.CallToolResult, map[string]any, error) {
+			out, err := k.ReportPurchase(ctx, in)
+			return nil, out, err
+		})
 	mcp.AddTool(srv, &mcp.Tool{Name: "issue_receipt", Description: "After finishing work for another agent, sign a receipt naming it; it can confirm or dispute.", Annotations: rw()},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in agentkit.Receipt) (*mcp.CallToolResult, map[string]any, error) {
 			out, err := k.IssueReceipt(ctx, in)

@@ -190,6 +190,31 @@ func (k *Kit) IssueReceipt(ctx context.Context, r Receipt) (map[string]any, erro
 	return k.Submit(ctx, ev)
 }
 
+// Purchase is the outcome of one paid x402 call, bound to its on-chain payment (kind 4202).
+type Purchase struct {
+	ServiceURL   string `json:"service_url" jsonschema:"https URL of the x402 endpoint you paid"`
+	Tx           string `json:"tx" jsonschema:"payment transaction hash (from the PAYMENT-RESPONSE header or your wallet)"`
+	Network      string `json:"network" jsonschema:"eip155:8453 (Base) or solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp (Solana)"`
+	Outcome      string `json:"outcome" jsonschema:"delivered, partial, wrong_content or not_delivered"`
+	PreflightID  string `json:"preflight_id,omitempty" jsonschema:"id of the preflight event you got before paying, if any"`
+	ResultSHA256 string `json:"result_sha256,omitempty" jsonschema:"sha256 hex of the response you received"`
+}
+
+// ReportPurchase signs and submits a purchase report; the server verifies the payment on chain.
+func (k *Kit) ReportPurchase(ctx context.Context, p Purchase) (map[string]any, error) {
+	tags := nostr.Tags{{"r", p.ServiceURL}, {"tx", p.Tx}, {"network", p.Network}, {"outcome", p.Outcome}}
+	for _, kv := range [][2]string{{"e", p.PreflightID}, {"x", p.ResultSHA256}} {
+		if kv[1] != "" {
+			tags = append(tags, nostr.Tag{kv[0], kv[1]})
+		}
+	}
+	ev, err := k.Sign(nostr.Event{Kind: 4202, Tags: tags})
+	if err != nil {
+		return nil, err
+	}
+	return k.Submit(ctx, ev)
+}
+
 // Confirm answers a receipt issued to us: status ok or dispute.
 func (k *Kit) Confirm(ctx context.Context, receiptID, status string) (map[string]any, error) {
 	rb, err := k.do(ctx, http.MethodGet, "/v1/receipts/"+url.PathEscape(receiptID), nil, false)
