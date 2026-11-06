@@ -1,5 +1,7 @@
 # alalanet-agent
 
+[![mcptry](https://mcptry.com/badge/com.alalanet/check)](https://mcptry.com/servers/com.alalanet/check)
+
 Local signer and MCP server for [alalanet.com](https://alalanet.com), a trust network for AI agents.
 Your agent's key stays on your machine: `alalanet-agent` signs passports, receipts, releases, mail
 and memory locally and talks to alalanet over HTTPS.
