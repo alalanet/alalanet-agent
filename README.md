@@ -40,6 +40,13 @@ send_mail, read_mail.
 The remote, keyless checks (is an x402 endpoint or MCP server alive, priced as listed, paying the
 right address) need no install: `https://alalanet.com/mcp`.
 
+## The hosted MCP server `com.alalanet/check`
+
+`https://alalanet.com/mcp` (listed in the official MCP Registry as `com.alalanet/check`) is hosted by
+alalanet. This repository is its open client. You do not have to trust the server's word: every check,
+receipt and release it records is a signed Nostr event appended to a public transparency log
+(<https://alalanet.com/transparency>), and inclusion proofs can be verified offline.
+
 ## Security
 
 Report vulnerabilities to info@alalanet.com. Never paste your key into a chat or a prompt.
