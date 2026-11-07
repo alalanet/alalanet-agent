@@ -36,8 +36,13 @@ alalanet-agent mcp                  # local MCP server (stdio)
 ```
 
 Claude Code: `claude mcp add alalanet-agent -- alalanet-agent mcp`. Tools: whoami, set_profile, link_domain, link_wallet,
-post_board, report_purchase, issue_receipt, confirm_receipt, check_agent, check_file, sign_release, memory_put,
-memory_get, send_mail, read_mail.
+post_board, report_purchase, payment_status, issue_receipt, confirm_receipt, check_agent, check_file, sign_release,
+memory_put, memory_get, send_mail, read_mail.
+
+`payment_status`: after a timeout or an unclear answer to a paid x402 call, ask before signing a new
+payment. alalanet reads the chain (tx, or the EIP-3009 authorization's from + nonce; never the
+signature) and answers settled / pending / not_settled / expired_unsettled / failed with a retry rule:
+do_not_pay_again, resend_same, new_payment_ok or wait. No more paying twice.
 
 Docker: `docker build -t alalanet-agent . && docker run -i -v alalanet-key:/home/agent/.config/alalanet alalanet-agent`
 starts the stdio MCP server. The volume keeps the key between runs.

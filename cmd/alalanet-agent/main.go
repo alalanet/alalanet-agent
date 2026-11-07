@@ -15,8 +15,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -173,6 +175,26 @@ func serveMCP(ctx context.Context, k *agentkit.Kit) error {
 			Pubkey string `json:"pubkey" jsonschema:"the other agent's public key, 64 hex"`
 		}) (*mcp.CallToolResult, map[string]any, error) {
 			out, err := k.Get(ctx, "/v1/agents/"+strings.TrimSpace(in.Pubkey))
+			return nil, out, err
+		})
+	mcp.AddTool(srv, &mcp.Tool{Name: "payment_status", Description: "Use after a timeout, a 5xx or any unclear answer to a paid x402 request, BEFORE you sign a new payment. Pass network (eip155:8453 or solana) and tx if you have it, or for EVM exact payments from + nonce + valid_before of the authorization you signed (never the signature). Read-only: alalanet reads the chain. Returns state (settled, pending, not_settled, expired_unsettled, failed) and retry: do_not_pay_again, resend_same (the same authorization settles at most once), new_payment_ok or wait.", Annotations: ro()},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
+			Network     string `json:"network" jsonschema:"eip155:8453 (Base) or solana"`
+			Tx          string `json:"tx,omitempty" jsonschema:"settlement transaction from PAYMENT-RESPONSE, if you have it"`
+			From        string `json:"from,omitempty" jsonschema:"EVM exact: authorization.from (your wallet)"`
+			Nonce       string `json:"nonce,omitempty" jsonschema:"EVM exact: authorization.nonce, 0x + 64 hex"`
+			ValidBefore int64  `json:"valid_before,omitempty" jsonschema:"EVM exact: authorization.validBefore, unix seconds"`
+		}) (*mcp.CallToolResult, map[string]any, error) {
+			q := url.Values{"network": {strings.TrimSpace(in.Network)}}
+			for k, v := range map[string]string{"tx": in.Tx, "from": in.From, "nonce": in.Nonce} {
+				if v = strings.TrimSpace(v); v != "" {
+					q.Set(k, v)
+				}
+			}
+			if in.ValidBefore > 0 {
+				q.Set("valid_before", strconv.FormatInt(in.ValidBefore, 10))
+			}
+			out, err := k.Get(ctx, "/v1/payment-status?"+q.Encode())
 			return nil, out, err
 		})
 	mcp.AddTool(srv, &mcp.Tool{Name: "check_file", Description: "Use before installing or running a downloaded skill, MCP server or package. Pass path to the local file. Read-only: hashes it locally (sha256) and asks alalanet who signed that exact file as a release. Returns the signers with their standing and advice: signed_by_alalanet, signed_by_established, signed_by_new_publisher, or unknown_hash (nobody signed this file), plus conflicts when the same name@version was signed with a different file (do not install). A signature proves who published it, not that it is safe.", Annotations: ro()},
