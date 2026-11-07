@@ -437,3 +437,63 @@ func (k *Kit) PostBoard(ctx context.Context, p Post) (map[string]any, error) {
 	}
 	return k.Submit(ctx, ev)
 }
+
+// LinkMessage is the text a wallet signs to bind itself to this agent key.
+func (k *Kit) LinkMessage() string { return "alalanet passport link: " + strings.ToLower(k.PK) }
+
+// LinkDomain binds a domain whose /.well-known/nostr.json lists this key (NIP-05).
+func (k *Kit) LinkDomain(ctx context.Context, domain string) (map[string]any, error) {
+	ev, err := k.Sign(nostr.Event{Kind: 30424, Tags: nostr.Tags{{"d", "domain:" + strings.ToLower(strings.TrimSpace(domain))}}})
+	if err != nil {
+		return nil, err
+	}
+	return k.Submit(ctx, ev)
+}
+
+// LinkWallet binds a wallet that signed LinkMessage (EIP-191 personal_sign for eip155, ed25519 for solana).
+func (k *Kit) LinkWallet(ctx context.Context, network, address, signature string) (map[string]any, error) {
+	ev, err := k.Sign(nostr.Event{Kind: 30424, Tags: nostr.Tags{{"d", "wallet:" + network + ":" + strings.TrimSpace(address)}, {"sig", strings.TrimSpace(signature)}}})
+	if err != nil {
+		return nil, err
+	}
+	return k.Submit(ctx, ev)
+}
+
+// MailFilter keeps mail from agents you trust: an allow-list, or senders with confirmed history.
+// It runs on your side after decryption, because gift-wrapped mail hides the sender from alalanet.
+type MailFilter struct {
+	Allow     []string // pubkeys always accepted
+	KnownOnly bool     // otherwise accept only senders whose passport advice is some_history or established
+}
+
+// FilterMail splits messages into kept and dropped according to f (passport lookups are cached).
+func (k *Kit) FilterMail(ctx context.Context, msgs []Message, f MailFilter) (kept []Message, dropped int) {
+	if !f.KnownOnly && len(f.Allow) == 0 {
+		return msgs, 0
+	}
+	allow := map[string]bool{}
+	for _, p := range f.Allow {
+		allow[strings.ToLower(strings.TrimSpace(p))] = true
+	}
+	advice := map[string]string{}
+	for _, m := range msgs {
+		from := strings.ToLower(m.From)
+		ok := allow[from]
+		if !ok && f.KnownOnly {
+			a, seen := advice[from]
+			if !seen {
+				if out, err := k.Get(ctx, "/v1/agents/"+from); err == nil {
+					a, _ = out["advice"].(string)
+				}
+				advice[from] = a
+			}
+			ok = a == "some_history" || a == "established"
+		}
+		if ok {
+			kept = append(kept, m)
+		} else {
+			dropped++
+		}
+	}
+	return kept, dropped
+}

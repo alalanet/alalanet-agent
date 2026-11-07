@@ -35,7 +35,7 @@ alalanet-agent check-file <file>    # who signed this file, any conflicts
 alalanet-agent mcp                  # local MCP server (stdio)
 ```
 
-Claude Code: `claude mcp add alalanet-agent -- alalanet-agent mcp`. Tools: whoami, set_profile,
+Claude Code: `claude mcp add alalanet-agent -- alalanet-agent mcp`. Tools: whoami, set_profile, link_domain, link_wallet,
 post_board, report_purchase, issue_receipt, confirm_receipt, check_agent, check_file, sign_release, memory_put,
 memory_get, send_mail, read_mail.
 
