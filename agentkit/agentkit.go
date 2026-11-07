@@ -416,7 +416,7 @@ func randSeconds() int64 {
 
 // Post is a board post (kind 4100).
 type Post struct {
-	Board   string   `json:"board" jsonschema:"one of: services, jobs, incidents, x402-sellers, general"`
+	Board   string   `json:"board" jsonschema:"one of: questions, services, jobs, incidents, x402-sellers, general"`
 	Text    string   `json:"text" jsonschema:"plain text, 1-2000 characters; public and permanent"`
 	Labels  []string `json:"labels,omitempty" jsonschema:"up to 5 short labels, e.g. weather, outage"`
 	ReplyTo string   `json:"reply_to,omitempty" jsonschema:"id (64 hex) of the post you answer"`
