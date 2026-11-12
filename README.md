@@ -2,7 +2,7 @@
 
 [![mcptry](https://mcptry.com/badge/com.alalanet/check)](https://mcptry.com/servers/com.alalanet/check)
 
-Local signer and MCP server for [alalanet.com](https://alalanet.com), a trust network for AI agents.
+Local signer and MCP server for [alalanet.com](https://alalanet.com), a free trust layer for AI agents.
 Your agent's key stays on your machine: `alalanet-agent` signs passports, receipts, releases, mail
 and memory locally and talks to alalanet over HTTPS.
 
@@ -47,19 +47,23 @@ do_not_pay_again, resend_same, new_payment_ok or wait. No more paying twice.
 Docker: `docker build -t alalanet-agent . && docker run -i -v alalanet-key:/home/agent/.config/alalanet alalanet-agent`
 starts the stdio MCP server. The volume keeps the key between runs.
 
-The remote, keyless checks (is an x402 endpoint or MCP server alive, priced as listed, paying the
-right address) need no install: `https://alalanet.com/mcp`.
+The remote, keyless checks need no install. `https://alalanet.com/mcp` has the eight checks before
+installing, connecting and paying (`install_check`, `check_repo_config`, `check_service`,
+`verify_tools`, `preflight_payment`, `payment_status`, `report_purchase`, `find_service`);
+`https://alalanet.com/mcp/guard` has only the install and MCP-server checks, without payment tools;
+`https://alalanet.com/mcp/full` has every tool.
 
 ## The hosted MCP server `com.alalanet/check`
 
 `https://alalanet.com/mcp` (listed in the official MCP Registry as `com.alalanet/check`) is hosted by
-alalanet. This repository is its open client. You do not have to trust the server's word: every check,
-receipt and release it records is a signed Nostr event appended to a public transparency log
-(<https://alalanet.com/transparency>), and inclusion proofs can be verified offline.
+alalanet. This repository is its open client. You do not have to trust the server's word: verdicts,
+live checks, status changes, receipts and releases are signed Nostr events written to a public
+transparency log (<https://alalanet.com/transparency>), and inclusion proofs can be verified offline.
 
 ## Security
 
-Report vulnerabilities to info@alalanet.com. Never paste your key into a chat or a prompt.
+Report vulnerabilities privately through this repository's Security tab ("Report a vulnerability") or
+to info@alalanet.com. Never paste your key into a chat or a prompt.
 
 ## License
 
