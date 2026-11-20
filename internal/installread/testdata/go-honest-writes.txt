@@ -1,0 +1,16 @@
+git clone https://github.com/zz/t && cd t && go install github.com/zz/t@latest
+git clone https://github.com/zz/t && go install golang.org/x/tools/gopls@latest
+git pull && go install golang.org/x/tools/gopls@latest
+tar -xzf go1.23.0.linux-amd64.tar.gz -C /usr/local && /usr/local/go/bin/go install golang.org/x/tools/gopls@latest
+curl -LO https://go.dev/dl/go1.23.0.linux-amd64.tar.gz && tar -C /usr/local -xzf go1.23.0.linux-amd64.tar.gz && go install golang.org/x/tools/gopls@latest
+wget -q https://go.dev/dl/go1.23.0.linux-amd64.tar.gz && tar -C /usr/local -xzf go1.23.0.linux-amd64.tar.gz && go install golang.org/x/tools/gopls@latest
+curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.61.0 && go install golang.org/x/tools/gopls@latest
+python3 -c 'import sys; print(sys.version)' && go install golang.org/x/tools/gopls@latest
+node -e 'console.log(1)' && go install golang.org/x/tools/gopls@latest
+cp -r templates/ out/ && go install golang.org/x/tools/gopls@latest
+rsync -a src/ dst/ && go install golang.org/x/tools/gopls@latest
+mkdir -p ~/bin && cp tool ~/bin/ && go install golang.org/x/tools/gopls@latest
+OUT=build; mkdir -p $OUT && echo x > $OUT/a && go install golang.org/x/tools/gopls@latest
+echo hi > out.txt && go install golang.org/x/tools/gopls@latest
+go mod download && go install golang.org/x/tools/gopls@latest
+make && go install golang.org/x/tools/gopls@latest

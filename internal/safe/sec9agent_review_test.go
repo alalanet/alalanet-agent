@@ -13,6 +13,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/alalanet/alalanet-agent/internal/costtest"
 )
 
 // zzNonblank counts the characters of s that are not blanks (U+0020, the other Zs, U+2800), each byte
@@ -237,11 +239,12 @@ func TestZZReviewSEC9AgentCountCost(t *testing.T) {
 	var lines []string
 	worstName, worstNs := "", 0.0
 	for name, s := range zzWorst(64 << 10) {
-		start := time.Now()
-		_, n := TextCount(s)
-		_ = Hidden(s)
-		_ = IdeographicSelectors(s)
-		d := time.Since(start)
+		var n int
+		d := costtest.One(costtest.Rounds, func() { // the least of three, thread CPU (COST-TEST-LOAD-1)
+			_, n = TextCount(s)
+			_ = Hidden(s)
+			_ = IdeographicSelectors(s)
+		})
 		allocs := testing.AllocsPerRun(3, func() { TextCount(s) })
 		res := testing.Benchmark(func(b *testing.B) {
 			b.ReportAllocs()
@@ -253,16 +256,15 @@ func TestZZReviewSEC9AgentCountCost(t *testing.T) {
 		if nsb > worstNs {
 			worstName, worstNs = name, nsb
 		}
-		lines = append(lines, fmt.Sprintf("%-32s %6d B  removed %6d  TextCount %8.1f us (%5.1f ns/B, %d B/op, %.0f allocs)  first call with Hidden+IVS %v",
+		lines = append(lines, fmt.Sprintf("%-32s %6d B  removed %6d  TextCount %8.1f us (%5.1f ns/B, %d B/op, %.0f allocs)  with Hidden+IVS %v (least of 3)",
 			name, len(s), n, float64(res.NsPerOp())/1e3, nsb, res.AllocedBytesPerOp(), allocs, d))
 		if d > time.Second {
 			t.Errorf("%s: %v for 64 KiB", name, d)
 		}
 	}
 	big := zzWorst(4 << 20)[worstName]
-	start := time.Now()
-	_, n := TextCount(big)
-	d := time.Since(start)
+	var n int
+	d := costtest.One(costtest.Rounds, func() { _, n = TextCount(big) }) // the least of three, thread CPU (COST-TEST-LOAD-1)
 	lines = append(lines, fmt.Sprintf("4 MiB of the slowest (%s): TextCount %v, removed %d", worstName, d, n))
 	if d > 30*time.Second {
 		t.Errorf("4 MiB: %v", d)

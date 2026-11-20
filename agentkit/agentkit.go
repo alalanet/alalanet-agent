@@ -39,6 +39,7 @@ type Kit struct {
 	SK, PK string
 	API    string // https://alalanet.com
 	HTTP   *http.Client
+	Pins   *ReleasePins // the release keys CheckFile trusts; nil: this build's (ProductionReleasePins)
 }
 
 // DefaultKeyFile is ~/.config/alalanet/key (or $ALALANET_AGENT_KEY_FILE).
@@ -128,14 +129,21 @@ func (k *Kit) send(ctx context.Context, method, path string, body []byte, auth b
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "alalanet-agent/1")
+	client := k.HTTP
 	if auth {
 		h, err := k.nip98(method, full, body)
 		if err != nil {
 			return nil, err
 		}
 		req.Header.Set("Authorization", h)
+		// The signed Authorization goes to the URL it signs and no further: no redirect is followed, not even on
+		// alalanet's own host (net/http keeps Authorization there, http included); the 3xx is the answer, as for
+		// the hook's call (AGENTKIT-REDIRECT-1, ADR-0214 round 2).
+		c := *client
+		c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		client = &c
 	}
-	return k.HTTP.Do(req)
+	return client.Do(req)
 }
 
 // apiOK refuses an ALALANET_API anyone between could answer for: plain http to another machine, where a
@@ -168,7 +176,8 @@ func (k *Kit) do(ctx context.Context, method, path string, body []byte, auth boo
 	return cleanAnswer(out).(map[string]any), nil
 }
 
-// doJSON is do's answer as alalanet sent it, before cleaning: only Submit reads it so (keepOwnEvent).
+// doJSON is do's answer as alalanet sent it, before cleaning: only Submit (keepOwnEvent) and CheckFile
+// (checkReleases: the release events, checked as signed) read it so.
 func (k *Kit) doJSON(ctx context.Context, method, path string, body []byte, auth bool) (map[string]any, error) {
 	resp, err := k.send(ctx, method, path, body, auth)
 	if err != nil {
@@ -405,30 +414,28 @@ func FileSHA256(path string) (string, error) {
 
 // SignRelease publishes name@version = sha256(file) under the agent's passport.
 func (k *Kit) SignRelease(ctx context.Context, nameVersion, file, source, typ string) (map[string]any, error) {
-	sum, err := FileSHA256(file)
-	if err != nil {
-		return nil, err
-	}
-	tags := nostr.Tags{{"d", strings.ToLower(nameVersion)}, {"x", sum}}
-	if source != "" {
-		tags = append(tags, nostr.Tag{"r", source})
-	}
-	if typ != "" {
-		tags = append(tags, nostr.Tag{"m", typ})
-	}
-	ev, err := k.Sign(nostr.Event{Kind: 30422, Tags: tags})
+	ev, err := k.ReleaseEvent(nameVersion, file, source, typ)
 	if err != nil {
 		return nil, err
 	}
 	return k.Submit(ctx, ev)
 }
 
+// CheckFile asks alalanet who signed this exact file, then decides signed_by_alalanet itself: only a
+// release event that verifies here against the pinned release keys makes a file alalanet's own
+// (checkReleases, ADR-0109 step 2). The rest of the answer is alalanet's, cleaned.
 func (k *Kit) CheckFile(ctx context.Context, file string) (map[string]any, error) {
 	sum, err := FileSHA256(file)
 	if err != nil {
 		return nil, err
 	}
-	return k.do(ctx, http.MethodGet, "/v1/artifacts/"+sum, nil, false)
+	raw, err := k.doJSON(ctx, http.MethodGet, "/v1/artifacts/"+sum, nil, false)
+	if err != nil {
+		return nil, err
+	}
+	out := cleanAnswer(raw).(map[string]any)
+	checkReleases(raw, out, sum, file, k.releasePins())
+	return out, nil
 }
 
 func (k *Kit) Get(ctx context.Context, path string) (map[string]any, error) {
@@ -872,7 +879,7 @@ func (k *Kit) PostBoard(ctx context.Context, p Post) (map[string]any, error) {
 // LinkMessage is the text a wallet signs to bind itself to this agent key.
 func (k *Kit) LinkMessage() string { return "alalanet passport link: " + strings.ToLower(k.PK) }
 
-// LinkDomain binds a domain whose /.well-known/nostr.json lists this key (NIP-05).
+// LinkDomain binds a domain whose /.well-known/nostr.json lists this key under the domain's own name "_" (NIP-05).
 func (k *Kit) LinkDomain(ctx context.Context, domain string) (map[string]any, error) {
 	ev, err := k.Sign(nostr.Event{Kind: 30424, Tags: nostr.Tags{{"d", "domain:" + strings.ToLower(strings.TrimSpace(domain))}}})
 	if err != nil {

@@ -2,6 +2,7 @@ package installread
 
 import (
 	"encoding/json/jsontext"
+	"maps"
 	"net/url"
 	"path"
 	"regexp"
@@ -93,6 +94,14 @@ type extraParse struct {
 	win      bool                // the value being judged is one a Windows shell reads: %NAME% is a variable, ";" separates
 	as       string              // that value as the line spells it, for the reason's text
 	cmdRead  map[string][]string // cmd: NAME -> the values of set NAME=a;b read whole (cmdSets)
+	substs   []string            // the texts of the line's substitutions, when read apart (READER-SHELLS)
+	facts    *substFacts         // what they say, read once (substFacts)
+	entryEnv bool                // the value being judged is an MCP entry's or a server's env value, which no shell expands
+	argEnv   bool                // the value being judged is an MCP add's -e K=V word, or one after env or sudo, whose ~ not every shell expands
+	noShell  int                 // inside env -S's words or a fish, PowerShell or cmd script: no POSIX shell expands an argument word's ~
+	argGlued bool                // the -e value was glued to its option (--env=K=V, -eK=V): a word no shell takes for an assignment
+	pwsh     bool                // the value being judged is PowerShell's (psEnv): a ":" list where it has no ";" (round 8, E)
+	quoted   map[string]string   // the line's quoted assignment words with a space and their values as assigned (round 8, R2)
 }
 
 const extraWork = 1 << 20
@@ -336,6 +345,7 @@ func (e *extraParse) scan(line string, apart bool) []string {
 				e.miss(whyManySubst)
 			}
 			e.apart = true
+			e.substs = pieces[1:]
 			e.literal = strings.Contains(line, markSubst) || strings.Contains(line, markInit) || strings.Contains(line, markProc)
 			for _, p := range pieces {
 				if (strings.Contains(p, markSubst) || strings.Contains(p, markProc)) && substEnv.MatchString(p) {
@@ -369,8 +379,33 @@ func (e *extraParse) line(s string, depth int, through string) {
 		e.miss(whyDeep) // six cross-env deep: production does not read through cross-env, so it does not ask
 		return
 	}
-	for _, sg := range splitShell(s).segs {
-		e.command(sg.words, depth, through)
+	arith, indirect := lineArith(s)
+	for _, kv := range arith { // (( NAME = 1 )), $((NAME=1)), a[NAME=1] (round 27)
+		e.env(kv[0], kv[1])
+	}
+	if indirect { // (( $n = 1 )), let $n=1 (round 28)
+		e.envMiss("runs with an environment an arithmetic assignment sets by a name the line does not show")
+	}
+	for _, m := range fdVarRedir.FindAllStringSubmatch(s, -1) { // exec {NAME}>file: NAME is set to a descriptor
+		e.unknownSet(m[1])
+	}
+	sl := splitShell(s)
+	e.quoted = addAssigned(e.quoted, sl.assigned)
+	wsegs := sl.winSegs() // the Windows reading too: a reason in either reading is one (round 2, R2; round 3, D1)
+	for i, sg := range sl.segs {
+		rds := []shellSeg{sg}
+		if wsegs != nil && sg.hasWin() {
+			rds = append(rds, wsegs[i])
+		}
+		for _, rd := range rds {
+			for _, kv := range segAssigns(rd) { // ${NAME:=word}, arithmetic: as export NAME=word (rounds 26, 27)
+				e.env(kv[0], kv[1])
+			}
+			if segIndirect(rd) { // ${!ref:=…}, zsh's ${(P)ref:=…}: a name the line does not show (round 27)
+				e.envMiss("runs with an environment an expansion sets by an indirect name (${!…:=…}, ${(P)…:=…})")
+			}
+			e.command(rd.words, depth, through)
+		}
 	}
 }
 
@@ -387,6 +422,12 @@ var (
 	// init command (eval "$(pyenv init -)") has a mark of its own and is none.
 	substEnv = regexp.MustCompile(`(^|[\s;&|(])(export|declare\s+-x|typeset\s+-x|eval|env(\s+-\S+)*)\s+["']?\$\{_s\}|(^|[\s;&|(])(source|\.)\s+["']?\$\{_p\}`)
 )
+
+// expansionName: a name that is a variable's expansion, $n or ${n} (round 28).
+var expansionName = regexp.MustCompile(`^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$`)
+
+// fdVarRedir: a redirection that assigns its descriptor to a variable, {NAME}>file, {NAME}<file (bash 4.1, zsh).
+var fdVarRedir = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}\s*[<>]`)
 
 // shellKeywords: words of the shell's grammar after which a command starts with its own prefix.
 var shellKeywords = map[string]bool{"time": true, "if": true, "then": true, "do": true, "else": true, "elif": true,
@@ -405,6 +446,12 @@ func (e *extraParse) command(w []string, depth int, through string) {
 	if depth > 4 {
 		e.miss(whyDeep)
 		return
+	}
+	if s := stripEmptyExpansions(w); !slices.Equal(s, w) {
+		// NODE_OPTIONS=$@--inspect=…: the POSIX shell passes the word with its empty-by-default expansions read away, as
+		// the production reader reads it; PowerShell reads $5 as a variable of its own. Both readings count (a reason in
+		// either is one), and the line's own spelling is read last, so what it sets stays what it was (R4)
+		e.command(s, depth, through)
 	}
 	// Where a NAME=value word is an assignment: before the command a shell takes an identifier (A=1,
 	// A[1]=1, A+=1); env and sudo take any NAME; after nice, nohup, exec, xargs, timeout… the word is
@@ -462,7 +509,9 @@ func (e *extraParse) command(w []string, depth int, through string) {
 					// the split string in any spelling, read again as env's own arguments, as the production
 					// reader now reads it (P1-X, ADR-0173): what it reads, it checks, so no "not checked" reason
 					if v, rest, ok := envSplit(w); ok {
+						e.noShell++
 						e.line(envReread(v, rest), depth+1, through) // joined once (sixth review)
+						e.noShell--
 						return
 					}
 				}
@@ -492,6 +541,10 @@ func (e *extraParse) command(w []string, depth int, through string) {
 		case len(w) == 1 && paramDefault(x) != "":
 			goto body // ${X:=npx -y pkg} alone: an expansion the shell runs, not an assignment word
 		case strings.Contains(x, "=") && !strings.HasPrefix(x, "-"):
+			if paramExpansionProgram(x) {
+				goto body // ${X:=npm} i x: a parameter expansion, not an assignment word (READER-SHELLS P2-3)
+			}
+			x = assignedWord(e.quoted, x)  // env "HOME=~/a b": the value the shell assigns (round 8, R2)
 			k, v, _ := strings.Cut(x, "=") // as the production reader takes it: NAME=, NAME+=, A[1]=, $env:NAME=
 			if strings.ContainsAny(k, " \t\n;|&") {
 				// A quoted command line with a = in one of its arguments (an MCP entry's command:
@@ -517,7 +570,11 @@ func (e *extraParse) command(w []string, depth int, through string) {
 			case mode == 0 && name != k && statement():
 				e.appendEnv(name, v)
 			default:
+				// after env or sudo the assignment is an argument word, read as the first reader reads it (configEnv):
+				// one reason with one spelling (HOME-CONFIG-ENV-1 round 5, P3-4)
+				e.argEnv = mode == 1
 				e.env(k, v)
+				e.argEnv = false
 			}
 			w = w[1:]
 		case psEnvName.MatchString(x) && len(w) >= 3 && (w[1] == "=" || w[1] == "+="):
@@ -575,6 +632,9 @@ body:
 		}
 		for _, sg := range segs { // past the depth each says "nested too deep", once: production does not read through cross-env
 			e.command(sg.words, depth+1, through)
+			if win := sg.winWords(); win != nil {
+				e.command(win, depth+1, through)
+			}
 		}
 		return
 	}
@@ -582,21 +642,23 @@ body:
 	if strings.Contains(cmd, `\`) && !windowsPath(cmd) {
 		cmd = strings.ReplaceAll(cmd, `\`, "")
 	}
-	cmd = launchBase(cmd)
-	rest := w[1:]
+	// pip3.12 is pip, npm isntall is npm install, bun a is bun add (READER-NPM-ALIAS-1)
+	cmd, rest := canonCommand(launchBase(cmd), w[1:])
+	if e.runs(w, cmd, rest, depth, through) { // su -c, watch, trap, fish -c, call, start, $(echo npx) … (READER-SHELLS)
+		return
+	}
 	switch {
-	case cmd == "sh" || cmd == "bash" || cmd == "zsh" || cmd == "dash" || cmd == "ksh" || cmd == "fish":
-		for i, x := range rest {
-			if strings.HasPrefix(x, "-") && strings.Contains(x, "c") && !strings.HasPrefix(x, "--") {
-				e.line(strings.Join(rest[i+1:], " "), depth+1, through)
-				return
-			}
+	case posixShells[cmd] || cmd == "fish":
+		if s, ok := shellScript(rest, cmd == "fish"); ok {
+			e.line(s, depth+1, through)
 		}
 		return
 	case cmd == "pwsh" || cmd == "powershell":
 		for i, x := range rest {
 			if lx := strings.ToLower(x); lx == "-command" || lx == "-c" {
+				e.noShell++
 				e.line(strings.Join(rest[i+1:], " "), depth+1, through)
+				e.noShell--
 				return
 			}
 		}
@@ -604,7 +666,9 @@ body:
 	case cmd == "cmd":
 		for i, x := range rest {
 			if lx := strings.ToLower(x); lx == "/c" || lx == "/k" {
+				e.noShell++
 				e.line(strings.Join(rest[i+1:], " "), depth+1, through)
+				e.noShell--
 				return
 			}
 		}
@@ -627,7 +691,7 @@ body:
 			e.fromFile = append(e.fromFile, cmd)
 		}
 		return
-	case cmd == "printf":
+	case cmd == "printf" || cmd == "print": // zsh's print -v too (round 27)
 		for i, x := range rest { // printf -v NAME fmt …: sets NAME without an assignment word
 			switch {
 			case x == "-v" && i+1 < len(rest):
@@ -638,13 +702,19 @@ body:
 		}
 		return
 	case cmd == "read" || cmd == "readarray" || cmd == "mapfile":
+		// round 27: each its own options that take a value — read's -t is a timeout, mapfile's -t a flag (mapfile -t
+		// PATH < f set PATH unread)
+		takes := "dinNptu"
+		if cmd != "read" {
+			takes = "dnOsuCc"
+		}
 		for i := 0; i < len(rest); i++ { // read -r NAME …: the value comes from standard input
 			x := rest[i]
 			switch {
 			case x == "-a" && i+1 < len(rest):
 				i++
 				e.unknownSet(rest[i])
-			case len(x) == 2 && strings.Contains("dinNptuCcOs", x[1:]) && x[0] == '-' && i+1 < len(rest):
+			case len(x) == 2 && strings.Contains(takes, x[1:]) && x[0] == '-' && i+1 < len(rest):
 				i++ // an option's value
 			case strings.HasPrefix(x, "-"):
 			default:
@@ -664,7 +734,67 @@ body:
 			}
 		}
 		return
+	case cmd == "for" || cmd == "select":
+		// round 27: for NAME in WORDS sets NAME to each word; for NAME (no in) to each positional parameter
+		switch {
+		case len(rest) == 0 || !shellName.MatchString(rest[0]):
+		case len(rest) > 1 && rest[1] == "in":
+			for _, v := range rest[2:] {
+				e.env(rest[0], v)
+			}
+		case len(rest) == 1 || rest[1] == "do": // for NAME; do …, for NAME do …: the positional parameters
+			e.unknownSet(rest[0])
+		}
+		return
+	case cmd == "unset":
+		// round 27: with PATH unset bash runs a command from the current folder, as with PATH empty (checked in the
+		// pinned image: unset PATH; zzcmd runs ./zzcmd); unset -f removes functions
+		for _, x := range rest {
+			if x == "-f" {
+				break
+			}
+			if x == "PATH" || x == "path" {
+				e.env("PATH", "")
+			}
+		}
+		return
+	case cmd == "getopts":
+		if len(rest) > 1 { // getopts OPTSTRING NAME: NAME is set to an option letter (round 27)
+			e.unknownSet(rest[1])
+		}
+		return
+	case cmd == "vared" || cmd == "zparseopts" || cmd == "coproc":
+		// round 27: zsh's vared NAME reads it from the terminal, zparseopts -a/-A NAME fills it, coproc NAME { … }
+		// sets it to the coprocess's descriptors: the value is not on the line
+		for i, x := range rest {
+			switch {
+			case cmd == "zparseopts" && (x == "-a" || x == "-A") && i+1 < len(rest):
+				e.unknownSet(rest[i+1])
+			case cmd == "vared" && !strings.HasPrefix(x, "-") && i == len(rest)-1:
+				e.unknownSet(x)
+			case cmd == "coproc" && len(rest) == 1 && shellName.MatchString(x):
+				e.unknownSet(x)
+			}
+		}
+		if cmd == "coproc" && len(rest) > 1 {
+			e.command(rest, depth+1, through) // coproc CMD ARGS runs CMD
+		}
+		return
 	case cmd == "export" || cmd == "declare" || cmd == "typeset" || cmd == "setx" || cmd == "set" || cmd == "local" || cmd == "readonly":
+		// round 27: declare -n REF=NAME makes REF another name for NAME, and typeset -T ties a scalar to an array:
+		// what is assigned through them later is NAME's
+		for _, x := range rest {
+			if strings.HasPrefix(x, "-") && !strings.HasPrefix(x, "--") && strings.ContainsAny(x, "nT") && cmd != "set" && cmd != "setx" {
+				for _, y := range rest {
+					if k, v, ok := strings.Cut(y, "="); ok && !strings.HasPrefix(k, "-") {
+						e.unknownSet(v)
+					} else if !ok && !strings.HasPrefix(y, "-") {
+						e.unknownSet(y)
+					}
+				}
+				break
+			}
+		}
 		if cmd == "set" {
 			// fish: set [-g|-l|-U] -x NAME value…, in any order and clustered (-xg, -lx, --global --export)
 			exported, i := false, 0
@@ -690,7 +820,7 @@ body:
 			return
 		}
 		for _, x := range rest {
-			k, v, ok := strings.Cut(x, "=")
+			k, v, ok := strings.Cut(assignedWord(e.quoted, x), "=") // export "PATH=~/a b:…" (round 8, R2)
 			switch {
 			case ok && !strings.HasPrefix(k, "-") && !e.win && strings.HasSuffix(k, "+"):
 				e.appendEnv(strings.TrimSuffix(k, "+"), v) // export PATH+=":$HOME/bin": a statement
@@ -712,21 +842,29 @@ body:
 		}
 		return
 	}
-	// "<agent CLI> mcp add [-e K=V…] NAME -- cmd", also run through npx; "mcp add-json NAME '{…}'"
+	// "<agent CLI> [root options] mcp add [-e K=V…] NAME [--] cmd", also run through npx: the same reading of the server
+	// as the first reader's, by the one entry point (findMCPAdd, MCP-ADD-NO-DASH-1)
+	if m, ok := findMCPAdd(cmd, rest); ok {
+		e.pm++ // the client launches the server: its environment counts
+		for i, kv := range m.env {
+			if k, v, ok := strings.Cut(assignedWord(e.quoted, kv), "="); ok && k != "" { // -e "PATH=~/a b" (round 8, R2)
+				// an argument word: its ~ is not expanded by zsh, dash or bash --posix (HOME-CONFIG-ENV-1 round 3), nor by
+				// bash when it is glued to the option (--env=HOME=~ is no assignment-shaped word: round 6, P3-1)
+				e.argEnv, e.argGlued = true, m.envGlued[i]
+				e.env(k, v)
+				e.argEnv, e.argGlued = false, false
+			}
+		}
+		if len(m.launch) > 0 {
+			e.command(m.launch, depth+1, through)
+		}
+	}
+	// "mcp add-json NAME '{…}'"
 	for i := 0; i+1 < len(rest); i++ {
 		if rest[i] != "mcp" {
 			continue
 		}
 		switch rest[i+1] {
-		case "add":
-			e.pm++ // the client launches the server: its environment counts
-			e.mcpAddEnv(rest[i+2:])
-			for j := i + 2; j < len(rest); j++ {
-				if rest[j] == "--" && j+1 < len(rest) {
-					e.command(rest[j+1:], depth+1, through)
-					break
-				}
-			}
 		case "add-json":
 			e.pm++
 			for _, a := range rest[i+2:] {
@@ -814,11 +952,19 @@ func (e *extraParse) entry(s string, depth int) {
 	if decodeExact([]byte(s), &keys) != nil {
 		return // the production reader refuses it
 	}
-	for k := range keys {
-		switch lk := strings.ToLower(k); {
-		case lk == "envfile" || lk == "env_file":
+	// in the entry's order, a file's keys first: the repository reader (app mcpServerEntry) gives env_file before
+	// case_variant_key as well (READER-REASON-ORDER-1, round 48)
+	names := memberNames([]byte(s))
+	if len(names) != len(keys) {
+		names = slices.Sorted(maps.Keys(keys)) // decodeExact read it, so the decoder does: never, but in one order
+	}
+	for _, k := range names {
+		if lk := strings.ToLower(k); lk == "envfile" || lk == "env_file" {
 			e.miss(whyFromFile + " (" + clip(k, 20) + ")") // VS Code and Cursor load variables from that file
-		case lk != k && (lk == "command" || lk == "args" || lk == "env" || lk == "url" || lk == "type"):
+		}
+	}
+	for _, k := range names {
+		if lk := strings.ToLower(k); lk != k && (lk == "command" || lk == "args" || lk == "env" || lk == "url" || lk == "type") {
 			e.miss(whyVariant)
 		}
 	}
@@ -839,13 +985,15 @@ func (e *extraParse) entry(s string, depth int) {
 	if tmpDir(ent.Cwd) {
 		e.miss(whyTmpDir + " (" + clip(ent.Cwd, 60) + ")")
 	}
-	names := make([]string, 0, len(ent.Env))
+	names = make([]string, 0, len(ent.Env))
 	for k := range ent.Env {
 		names = append(names, k)
 	}
 	sort.Strings(names)
 	for _, k := range names {
+		e.entryEnv = true // the values reach the server as written (HOME-CONFIG-ENV-1 round 2, P2-1)
 		e.env(k, ent.Env[k])
+		e.entryEnv = false
 	}
 	e.line(entryLine(ent.Command, ent.Args), depth, "")
 	if raw := commandString(ent.Command, ent.Args); raw != "" {
@@ -872,31 +1020,6 @@ func commandString(command string, args []string) string {
 		return ""
 	}
 	return launchLine(command, args)
-}
-
-// mcpAddEnv reads -e/--env before "--" in "<client> mcp add": commander's -e is variadic (-e A=1 B=2),
-// yargs takes -e=K=V; each K=V is the environment the server is launched with.
-func (e *extraParse) mcpAddEnv(w []string) {
-	for i := 0; i < len(w) && w[i] != "--"; i++ {
-		x := w[i]
-		var vals []string
-		switch {
-		case x == "-e" || x == "--env":
-			for i+1 < len(w) && !strings.HasPrefix(w[i+1], "-") && strings.Contains(w[i+1], "=") {
-				i++
-				vals = append(vals, w[i])
-			}
-		case strings.HasPrefix(x, "--env="):
-			vals = []string{x[len("--env="):]}
-		case strings.HasPrefix(x, "-e") && len(x) > 2 && !strings.HasPrefix(x, "--"):
-			vals = []string{strings.TrimPrefix(x[2:], "=")}
-		}
-		for _, kv := range vals {
-			if k, v, ok := strings.Cut(kv, "="); ok && k != "" {
-				e.env(k, v)
-			}
-		}
-	}
 }
 
 // psSetsEnv: Set-Item env:NAME value sets a variable for what the line runs next.
@@ -962,10 +1085,10 @@ func (e *extraParse) psEnv(k string, plus bool, raw string) {
 	}
 	e.ps[un] = v
 	switch leverOf(name) {
-	case lvDirs, lvPath, lvVenv, lvPython, lvInterp, lvProgram:
-		e.win, e.as = true, raw
+	case lvDirs, lvPath, lvHome, lvVenv, lvPython, lvInterp, lvProgram:
+		e.win, e.as, e.pwsh = true, raw, true
 		e.judgeEnv(name, v)
-		e.win, e.as = false, ""
+		e.win, e.as, e.pwsh = false, "", false
 	default:
 		e.env(k, raw)
 	}
@@ -1213,23 +1336,15 @@ func (e *extraParse) launcher(cmd string, rest []string, depth int, through stri
 			e.flag(cmd, rest, j)
 		}
 	}
-	callAt := -1
 	switch cmd {
-	case "npx", "pnpx":
-		callAt = 0
-	case "npm", "pnpm":
-		for i, x := range rest {
-			if x == "exec" || x == "x" || x == "dlx" {
-				callAt = i + 1
-				break
-			}
-			if !strings.HasPrefix(x, "-") {
-				break
-			}
+	case "npx", "npm":
+		if npmCall(cmd, rest) {
+			e.miss(whyCall + cmd + " -c") // npx -sc '<shell>', npm -c '<shell>' exec: runs a command string
 		}
-	}
-	if callAt >= 0 && hasCall(rest, callAt) {
-		e.miss(whyCall + cmd + " -c") // npx -c '<shell>': runs a command string
+	case "pnpx", "pnpm":
+		if pnpmShell(cmd, rest) {
+			e.miss(whyCall + cmd + " -c") // pnpm -c dlx '<shell>', pnpx -sc …: runs the command words in a shell
+		}
 	}
 	f := fetches(cmd, rest)
 	if f {
@@ -1238,20 +1353,26 @@ func (e *extraParse) launcher(cmd string, rest []string, depth int, through stri
 	if through != "" && f {
 		e.miss(whyThrough + through + " that alalanet does not check (" + clip(cmd+" "+strings.Join(rest, " "), 60) + ")")
 	}
-	if runner {
-		// npx -y cross-env A=1 npx -y x: the package itself runs a command the production reader does not read
-		if p := firstPositional(rest, verb); p < len(rest) && rest[p] != "--" {
-			if pkg := strings.ToLower(stripVersion(rest[p])); envWrappers[pkg] || fileEnvWrappers[pkg] {
-				inner, f := rest[p+1:], e.fetch // after the runner's own fetch: what the wrapped command adds
-				if fileEnvWrappers[pkg] {
-					inner = afterOptions(inner) // npx dotenv -e .env -- npx jest: the wrapper's own options first
-				}
-				e.command(inner, depth+1, cmd+" "+pkg)
-				if fileEnvWrappers[pkg] && e.fetch > f {
-					e.fromFile = append(e.fromFile, pkg) // as for the wrapper run by its own name (command)
-				}
-			}
+	// the program a package runner starts, with its words, as the production reader reads it (runnerProgram; round 43)
+	p := runnerProgram(cmd, rest)
+	if p < 0 {
+		return
+	}
+	// npx -y cross-env A=1 npx -y x, npm exec -- dotenv -- npm i x: the package itself runs a command the production
+	// reader does not read; read here once, with the runner in the reason (round 44, P3-1), and not again as a program
+	if pkg := strings.ToLower(stripVersion(rest[p])); envWrappers[pkg] || fileEnvWrappers[pkg] {
+		inner, f := rest[p+1:], e.fetch // after the runner's own fetch: what the wrapped command adds
+		if fileEnvWrappers[pkg] {
+			inner = afterOptions(inner) // npx dotenv -e .env -- npx jest: the wrapper's own options first
 		}
+		e.command(inner, depth+1, cmd+" "+pkg)
+		if fileEnvWrappers[pkg] && e.fetch > f {
+			e.fromFile = append(e.fromFile, pkg) // as for the wrapper run by its own name (command)
+		}
+		return
+	}
+	if runnerReadsProgram(rest[p]) {
+		e.command(rest[p:], depth+1, through)
 	}
 }
 
@@ -1330,6 +1451,100 @@ func launcherRegion(cmd string, rest []string) (verb int, runner bool) {
 	return 0, false
 }
 
+// runnerProgram: where in rest the program a package runner starts begins — the command word, with the words the runner
+// hands it after it — or -1 when the command starts none. The runners: npx, pnpx, bunx and uvx; npm exec (and its
+// aliases), pnpm and Yarn exec and dlx, bun x; uv run and uv tool run; pipx run. The program is the runner's first word
+// that is no option and no option's value (runnerTakesNext), or the word after "--". Both readers read it with its words
+// as a nested command, as they read env's and sudo's: pnpm exec sh -c '<line>' ran its script through sh in pnpm
+// 10.34.9 to 12.21.0, npx -p <pkg> sh -c '<line>' through sh in npm 10 (ADR-0159 round 43, P2-1). For a runner that
+// fetches, the word is also the package (npx sh: npm's package sh); reading it as a program as well only reads more.
+func runnerProgram(cmd string, rest []string) int {
+	start := -1
+	switch cmd {
+	case "npx", "pnpx", "bunx", "uvx":
+		start = 0
+	case "npm", "pnpm", "yarn", "bun":
+		sub := pmFirstPositional(cmd, rest)
+		if sub < 0 {
+			return -1
+		}
+		switch v := rest[sub]; {
+		case cmd == "npm" && npmCommandWords[v] == "exec", (cmd == "pnpm" || cmd == "yarn") && (v == "exec" || v == "dlx"),
+			cmd == "bun" && v == "x":
+			start = sub + 1
+		}
+	case "uv":
+		switch {
+		case len(rest) >= 2 && rest[0] == "tool" && rest[1] == "run":
+			start = 2
+		case len(rest) >= 1 && rest[0] == "run":
+			start = 1
+		}
+	case "pipx":
+		if len(rest) >= 1 && rest[0] == "run" {
+			start = 1
+		}
+	}
+	if start < 0 {
+		return -1
+	}
+	for i := start; i < len(rest); i++ {
+		switch x := rest[i]; {
+		case x == "--":
+			if i+1 < len(rest) {
+				return i + 1
+			}
+			return -1
+		case strings.HasPrefix(x, "-") && len(x) > 1:
+			if runnerTakesNext(cmd, rest, x) { // a word with "=" carries its value: every table says no to it
+				i++
+			}
+		default:
+			return i
+		}
+	}
+	return -1
+}
+
+// runnerReadsProgram: whether the readers read anything of a program a runner starts — a shell (sh -c, fish -c, pwsh
+// -Command, cmd /c), a wrapper (env, sudo, eval, xargs …), a program that runs another (su, script, flock …), a package
+// manager or runner, python (-m pip), or a quoted script (one word with a blank or an operator: pnpm exec 'npm i x',
+// which a workspace's shellMode runs as a script). Any other program's words are its own (tsc --noEmit, prettier
+// --write ., the bin of the package npx fetched): reading them would only add a command. An env wrapper (cross-env,
+// dotenv) is read too: the production reader does not read past it, the extra reader holds an install it runs (launcher
+// reads it once, with the runner in the reason; round 44, P3-1). A word with an expansion or a backslash ($SHELL,
+// "$SHELL", ${SHELL:-sh}, $(command -v sh), s\h) names a program only the shell knows: it is read as the same word is at
+// the top, where $SHELL -c '<line>' is a variable command and s\h is sh (round 44, P2-1). A backquote needs no test of
+// its own: `which sh` has a blank, and `pick` is a substitution the line's own reading already holds.
+func runnerReadsProgram(w string) bool {
+	if strings.ContainsAny(w, " \t;|&$\\") {
+		return true
+	}
+	n := progName(launchBase(w))
+	return posixShells[n] || foreignShells[n] || n == "pwsh" || n == "powershell" || n == "cmd" || hookWrappers[n] ||
+		ScriptRunners[n] || packageManagers[n] || envWrappers[n] || fileEnvWrappers[n] || strings.HasPrefix(n, "python") || n == "py"
+}
+
+// runnerTakesNext: whether runner cmd (with words rest) gives option word x the next word as its value — npm's
+// (npmTakesNext; npx's -p and --package too), pnpm's (pnpmTakesNext), Yarn's (pmTakesValue, and Yarn 2+'s dlx -p, its
+// --package) and bun's (pmTakesValue), uv run's, uv tool run's and uvx's (the generated tables of uv 0.13.7: --env-file,
+// --group, --with-editable …; round 44, P2-1), and for pipx the generic table.
+func runnerTakesNext(cmd string, rest []string, x string) bool {
+	switch cmd {
+	case "npm", "npx":
+		return npmTakesNext(x) || valueFlags[x]
+	case "pnpm", "pnpx":
+		return pnpmTakesNext(x)
+	case "yarn":
+		return pmTakesValue(cmd, x) || x == "-p"
+	case "bun", "bunx":
+		return pmTakesValue(cmd, x)
+	case "uv", "uvx":
+		return pyTakesValue(pyTable(cmd, rest), cmd, x)
+	}
+	return valueFlags[x]
+}
+
 // firstPositional: the index of the first word from i on that is not an option or an option's value,
 // as the production reader skips them (len(rest) when none).
 func firstPositional(rest []string, i int) int {
@@ -1349,18 +1564,205 @@ func firstPositional(rest []string, i int) int {
 	return len(rest)
 }
 
-// hasCall: -c / --call before the first positional from i on.
-func hasCall(rest []string, i int) bool {
-	if i > len(rest) {
+// npmCall: whether npx, or npm with exec as its command, takes a command string (--call) in any spelling nopt reads as
+// one in npm 8 to 12 (npmCallWord). npx (bin/npx-cli.js, the same in npm 8.19.4 to 11.21.2) passes its options to npm exec
+// up to the first word it reads as no option's value; npm reads its options before the command and after it alike
+// (npm -c 'sh x.sh' exec runs the string, npm 10.8.2). The walk stops at the first word that is no option: npm exec
+// refuses a command string together with a package word (lib/commands/exec.js: call && args.length). READER-NPX-SC-1.
+func npmCall(cmd string, rest []string) bool {
+	if cmd == "npx" {
+		call, _ := npmOptionWalk(rest, 0, true)
+		return call
+	}
+	call, v := npmOptionWalk(rest, 0, false)
+	if v >= len(rest) || npmCommandWords[rest[v]] != "exec" {
 		return false
 	}
-	end := firstPositional(rest, i)
-	for _, x := range rest[i:end] {
-		if x == "-c" || x == "--call" || strings.HasPrefix(x, "--call=") {
+	after, _ := npmOptionWalk(rest, v+1, true)
+	return call || after
+}
+
+// npmOptionWalk reads npm's option words from i to the first word that is none (or "--"): whether one of them sets call
+// in some version, and that word's index. A word npm reads as an option's value is skipped (npmTakesNext); lenient also
+// skips the word after every option the generic table takes a value for (npx's -p, its --package), which only reads
+// further.
+func npmOptionWalk(rest []string, i int, lenient bool) (call bool, end int) {
+	for ; i < len(rest); i++ {
+		x := rest[i]
+		if x == "--" || !strings.HasPrefix(x, "-") {
+			return call, i
+		}
+		call = call || npmCallWord(x)
+		if npmTakesNext(x) || lenient && valueFlags[x] {
+			i++
+		}
+	}
+	return call, len(rest)
+}
+
+// npmCallWord: whether nopt sets --call from option word x to the next word or its "=" value: --call, -call, -c, and a
+// cluster of one-letter shorthands that ends in c (-sc, -yc, --sc). nopt's resolveShort strips every leading dash; an
+// exact key, then an exact shorthand, then a word whose letters are all one-letter shorthands expands, each letter in
+// turn (nopt 6.0.0 lib/nopt.js:457-496; 7.2.1 lib/nopt-lib.js:431-452; 8.1.0 and 9.0.0 lib/nopt-lib.js:460-481); c is
+// call's shorthand in every version (npm 8.19.4 lib/utils/config/definitions.js:415; definitions.js 9.9.4:395,
+// 10.9.10:376, 11.21.2:493, 12.2.2:506). A c before the cluster's end gets no word: the next expanded option follows it
+// (nopt reads an option-like word after a String option as no value), so -cs and --cal (--call --all --long) set an
+// empty call, which npm exec ignores (npm 10.8.2: npx --cal 'echo x' reads 'echo x' as a package).
+func npmCallWord(x string) bool {
+	name, _, _ := strings.Cut(strings.TrimLeft(x, "-"), "=")
+	switch {
+	case npmConfigKeys[name] != 0:
+		return name == "call"
+	case npmShorthands[name].keys != "":
+		return npmShorthands[name].keys == "call"
+	}
+	return npmClusterAny(name) && name[len(name)-1] == 'c'
+}
+
+// npmValued: the shorthands of a key that takes a word whose expansion carries the value (-s: --loglevel silent), so
+// they take no next word (npm 8.19.4 lib/utils/config/index.js:39-57; workspaces/config/lib/definitions/index.js:
+// 9.9.4 49-67, 10.9.10 and 11.21.2 39-57). -n, --no and --local expand to a switch's negation, which takes none anyway.
+var npmValued = wordSet("d dd ddd q quiet s silent verbose")
+
+// npmTakesNext: whether nopt gives npm option word x the next word as its value: an exact key whose type takes a word, a
+// shorthand for one, or a cluster whose last letter is one (-sw ws1; -sc '<shell>'); else, for a prefix of a key, as
+// pmTakesValue reads it. A word with "=" carries its value: no key, shorthand or cluster has an "=", and pmTakesValue
+// takes none for it.
+func npmTakesNext(x string) bool {
+	name := strings.TrimLeft(x, "-")
+	if name == "" {
+		return false
+	}
+	if npmConfigKeys[name] != 0 {
+		return pmLongValueOptions["npm"]["--"+name]
+	}
+	if _, ok := npmShorthands[name]; !ok && npmClusterAny(name) {
+		name = name[len(name)-1:]
+	}
+	if s, ok := npmShorthands[name]; ok {
+		return !npmValued[name] && pmLongValueOptions["npm"]["--"+s.keys]
+	}
+	return pmTakesValue("npm", x)
+}
+
+// npmClusterAny: w is a cluster of one-letter shorthands in some version.
+func npmClusterAny(w string) bool {
+	for i := range npmVersions {
+		if npmCluster(uint8(1)<<i, w) != nil {
 			return true
 		}
 	}
 	return false
+}
+
+// pnpmShell: whether pnpm dlx, pnpm exec or pnpx runs its command words in a shell (--shell-mode, short -c: execa's
+// shell: true, or pnpm 12's sh -c, joins the words) in some pnpm version 8 to 12. READER-PNPM-CALL-CLUSTER (ADR-0159
+// round 40).
+//   - pnpm 8 to 11 parse with @pnpm/nopt, which reads no option past the escape word (escapeArgs): dlx and exec in
+//     8.15.9 and 9.15.9; exec from 10.x on, where dlx stops at its command word instead (SPECIALLY_ESCAPED_CMDS). So
+//     the switch is read before the command word (pnpm -c dlx …, pnpm -C web -c exec …, pnpm -c recursive exec …) and,
+//     from 10.x on, between dlx and its command (pnpm dlx -c …, pnpx -c …).
+//   - pnpm 12 parses with clap and also reads exec's own options after it (pnpm exec -c …, pnpm exec -yc …).
+//
+// The words before the command word are read leniently: a word after an option that may take a value may be its value
+// (pnpm --fil web -c exec: nopt's prefix of --filter), so the walk goes on to dlx or exec. After the command word the
+// walk stops at the first word that is no option and no option's value (pnpmTakesNext): the command's own words follow.
+func pnpmShell(cmd string, rest []string) bool {
+	if cmd == "pnpx" { // pnpx is pnpm dlx (bin/pnpx.cjs; pnpm 12's binary started as pnpx)
+		return pnpmShellAfter(rest, 0)
+	}
+	shell, value := false, false
+	for i := 0; i < len(rest); i++ {
+		switch x := rest[i]; {
+		case x == "--":
+			// nopt reads no option after it, and the command word may still follow (pnpm -c -- exec '<shell>' ran)
+			return i+1 < len(rest) && pnpmRunner[rest[i+1]] && shell
+		case strings.HasPrefix(x, "-") && len(x) > 1:
+			sw := pnpmShellWord(x)
+			shell = shell || sw
+			value = !strings.Contains(x, "=") && (!sw || pnpmTakesNext(x)) // -c takes none, -cC a word
+		case pnpmRunner[x]:
+			return shell || pnpmShellAfter(rest, i+1)
+		case pnpmRecursive[x] || value || x == "true" || x == "false":
+			value = false // pnpm -c recursive exec; an option's value; a switch's true or false (nopt)
+		default:
+			return false // another command
+		}
+	}
+	return false
+}
+
+// pnpmShellAfter reads the options of dlx or exec from rest[i] (pnpx: from its first word) up to the first word that is
+// no option and no option's value, or "--".
+func pnpmShellAfter(rest []string, i int) bool {
+	for ; i < len(rest); i++ {
+		x := rest[i]
+		if x == "--" || !strings.HasPrefix(x, "-") || len(x) == 1 {
+			return false
+		}
+		if pnpmShellWord(x) {
+			return true
+		}
+		if i+1 < len(rest) && (pnpmTakesNext(x) && !strings.HasPrefix(rest[i+1], "-") || rest[i+1] == "true" || rest[i+1] == "false") {
+			i++ // nopt: a value-taking option takes a word that is no option; a switch takes true or false
+		}
+	}
+	return false
+}
+
+// pnpmRunner: pnpm's commands with a shell-mode switch (dlx.ts and exec.ts: shorthands c: '--shell-mode'). pnpm has no
+// command x: pnpm x -c … runs a script named x (8.15.9 to 12.21.0: "Command "x" not found").
+var pnpmRunner = map[string]bool{"dlx": true, "exec": true}
+
+// pnpmRecursive: nopt's recursive command words, after which pnpm reads the command (parse-cli-args RECURSIVE_CMDS).
+var pnpmRecursive = map[string]bool{"recursive": true, "multi": true, "m": true}
+
+// pnpmSingles: the one-letter shorthands of pnpm 8 to 12 for dlx and exec — the universal ones (pnpm/src/shorthands.ts;
+// y from pnpm 11), dlx's and exec's c — that nopt expands in a cluster, each letter in turn (@pnpm/nopt 0.2.1 and 0.3.1
+// lib/nopt.js, resolveShort), and clap reads in a cluster in pnpm 12.
+const pnpmSingles = "?CDEFHLOPScdfghilpqrsvwy"
+
+// pnpmShellWord: whether option word x sets shell-mode in some pnpm version: -c; a cluster of one-letter shorthands
+// with a c anywhere (shell-mode is a switch: it takes no word, and the letters after it are read too: -cs as -sc); or
+// --shell-mode or a prefix of it (nopt's abbreviation) from --sh on, with any number of leading dashes (nopt strips them).
+// A plain --sh is the cluster --reporter=silent --help, so only --she and longer are the prefix; after an even number of
+// "no-" (stripped after the cluster test) --no-no-sh is (pnpm 8.15.9 to 11.28.12 ran it; --no-no-s is unknown). An odd
+// number of "no-", or "=false", switches it off. A --config.<key> word sets that key as pnpm's own setting: shell-mode,
+// shellMode, and pnpm 11's prefix of it (--config.shell-mod) from shellm on, in any case and with or without its dash
+// (pnpm 8.15.9 to 11.28.12 ran the string; ADR-0159 round 43, P3-2).
+func pnpmShellWord(x string) bool {
+	name, val, eq := strings.Cut(strings.TrimLeft(x, "-"), "=")
+	if !strings.HasPrefix(x, "-") {
+		return false
+	}
+	if k, ok := strings.CutPrefix(name, "config."); ok {
+		k = strings.ToLower(strings.ReplaceAll(k, "-", ""))
+		return !(eq && val == "false") && len(k) >= len("shellm") && strings.HasPrefix("shellmode", k)
+	}
+	if strings.Trim(name, pnpmSingles) == "" {
+		return strings.Contains(name, "c")
+	}
+	if npmNegated(name) || eq && val == "false" {
+		return false
+	}
+	for len(name) >= 3 && strings.EqualFold(name[:3], "no-") {
+		name = name[3:]
+	}
+	return len(name) >= len("sh") && strings.HasPrefix("shell-mode", name)
+}
+
+// pnpmTakesNext: whether pnpm gives option word x the next word as its value: a long option pmTakesValue knows, or -C
+// or -F alone or at a cluster's end (-rF web). A word with "=" carries its value.
+func pnpmTakesNext(x string) bool {
+	if pmTakesValue("pnpm", x) {
+		return true
+	}
+	name := strings.TrimLeft(x, "-")
+	if name == "" || strings.Trim(name, pnpmSingles) != "" {
+		return false
+	}
+	last := name[len(name)-1]
+	return last == 'C' || last == 'F'
 }
 
 var npmFamily = map[string]bool{"npx": true, "bunx": true, "pnpx": true, "npm": true, "pnpm": true, "yarn": true, "bun": true}
@@ -1447,7 +1849,7 @@ func (e *extraParse) flag(cmd string, rest []string, j int) {
 }
 
 func (e *extraParse) untrustedInterpreter(v string) bool {
-	if (untrustedPath(v) || cwdRooted(v)) && venvPython.MatchString(v) && !tmpMarker(strings.ToLower(strings.ReplaceAll(v, `\`, "/"))) {
+	if (untrustedPathIn(v, e.win || windowsList(v)) || cwdRooted(v)) && venvPython.MatchString(v) && !tmpMarker(strings.ToLower(strings.ReplaceAll(v, `\`, "/"))) {
 		return false // server/.venv/bin/python, $PWD/.venv/bin/python: the project's own virtualenv
 	}
 	return e.untrustedPathX(v, false)
@@ -1584,7 +1986,7 @@ var procCwd = regexp.MustCompile(`^/proc/[^/]+/(cwd|root)(/|$)`)
 // set earlier is in it (D=. --cafile $D/ca.pem), and a variable still there is the session's. list: a
 // search path, where an empty entry is the current folder.
 func (e *extraParse) untrustedPathX(v string, list bool) bool {
-	if untrustedPath(v) {
+	if untrustedPathIn(v, e.win || windowsList(v)) {
 		return true // the production reading first: what it holds stays held
 	}
 	if len(v) > maxPathValue {
@@ -1649,7 +2051,7 @@ func (e *extraParse) untrustedPathX(v string, list bool) bool {
 			if c := path.Clean(ld); procCwd.MatchString(c) || tmpMarker(c) {
 				return true // //proc/./self/cwd, /usr/../tmp
 			}
-		case strings.HasPrefix(d, "~"): // ~/bin, ~user/bin: a home folder
+		case strings.HasPrefix(d, "~"): // ~/bin, the home; ~user/bin is held by untrustedPath above (round 6, P2-A)
 		case windows && driveEntry(d): // a share (\\server\x) starts with "/" above, as any rooted path
 		default:
 			return true // relative: the current folder decides what runs
@@ -1753,6 +2155,12 @@ const unknownValue = "\x00unknown"
 // unknownSet: printf -v NAME or read NAME set a variable whose value the line does not show; a name any
 // check could hold for some value is a reason (printf -v PATH needs no export).
 func (e *extraParse) unknownSet(k string) {
+	if strings.ContainsAny(k, "$`") && expansionName.MatchString(k) {
+		// printf -v "$n", read "$n", getopts … "$n": a name the line does not show (round 28, rule 2), as export "$n=…"
+		// is (envBound)
+		e.envMiss(whyUnknown + " (a variable named by " + clip(k, 40) + ")")
+		return
+	}
 	if i := strings.IndexByte(k, '['); i > 0 {
 		k = k[:i]
 	}

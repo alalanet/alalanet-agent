@@ -7,6 +7,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -42,9 +43,18 @@ func answerForm(t *testing.T, runtime, out string) string {
 		return s
 	}
 	switch runtime {
+	case "claude-code":
+		if h, ok := m["hookSpecificOutput"].(map[string]any); ok {
+			switch str(h, "permissionDecision") {
+			case "ask":
+				return "hold"
+			case "deny":
+				return "deny"
+			}
+		}
 	case "codex":
 		if h, ok := m["hookSpecificOutput"].(map[string]any); ok && str(h, "permissionDecision") == "deny" {
-			if strings.HasSuffix(str(h, "permissionDecisionReason"), holdNote) {
+			if strings.HasSuffix(str(h, "permissionDecisionReason"), holdNote) || strings.HasSuffix(str(h, "permissionDecisionReason"), mcpHoldNote) {
 				return "hold"
 			}
 			return "deny"
@@ -54,7 +64,7 @@ func answerForm(t *testing.T, runtime, out string) string {
 		case "allow":
 			return "silent"
 		case "deny":
-			if strings.HasSuffix(str(m, "agent_message"), holdNote) {
+			if strings.HasSuffix(str(m, "agent_message"), holdNote) || strings.HasSuffix(str(m, "agent_message"), mcpHoldNote) {
 				return "hold"
 			}
 			return "deny"
@@ -95,6 +105,8 @@ func TestHookDailyLimitIsNotAVerdict(t *testing.T) {
 		{"a hold", "ask", "", false, "hold", ""},
 		{"another mark", "ask", "something-else", false, "hold", ""},
 		{"a deny with the mark", "deny", "daily-limit", false, "deny", ""},
+		{"the request rate (M-6 round 2)", "ask", "rate", false, "silent", "alalanet's request rate for this address is reached; the install goes ahead unchecked (ALALANET_FAIL_CLOSED=1 holds it instead)"},
+		{"the request rate, fail closed", "ask", "rate", true, "hold", ""},
 	} {
 		for runtime, input := range runtimeInputs {
 			f := &fakeHook{answer: func(w http.ResponseWriter) {
@@ -162,7 +174,8 @@ func TestHookFailClosedThroughMain(t *testing.T) {
 		env        []string
 		hold, warn string
 	}{
-		{[]string{"ALALANET_FAIL_CLOSED=1"}, "NOT CHECKED — alalanet could not be reached", "nothing was checked, the call is held"},
+		// a hold's stderr is its reason alone, the diagnostic line held back (round 7, R7-P3-1)
+		{[]string{"ALALANET_FAIL_CLOSED=1"}, "NOT CHECKED — alalanet could not be reached", "alalanet install_check: NOT CHECKED — alalanet could not be reached"},
 		{nil, "", "the install goes ahead unchecked"},
 	} {
 		cmd := exec.Command(os.Args[0], "-test.run=^$") // without the TestMain the child runs no test (never a fork chain)
@@ -170,10 +183,13 @@ func TestHookFailClosedThroughMain(t *testing.T) {
 		cmd.Stdin = strings.NewReader(codexInput("Bash", "npm install left-pad"))
 		var out, stderr bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &out, &stderr
-		if err := cmd.Run(); err != nil {
+		// a hold is Codex's deny, which also exits 2 with the reason on stderr (ADR-0150 round 7, HOOK-CODEX-EXIT2)
+		var exit *exec.ExitError
+		if err := cmd.Run(); c.hold == "" && err != nil || c.hold != "" && (!errors.As(err, &exit) || exit.ExitCode() != 2 || !strings.Contains(stderr.String(), c.hold)) {
 			t.Fatalf("%v: %v %s", c.env, err, stderr.String())
 		}
-		if (c.hold == "") != (out.Len() == 0) || !strings.Contains(out.String(), c.hold) || !strings.Contains(stderr.String(), c.warn) {
+		if (c.hold == "") != (out.Len() == 0) || !strings.Contains(out.String(), c.hold) || !strings.Contains(stderr.String(), c.warn) ||
+			c.hold != "" && (!strings.HasPrefix(stderr.String(), c.warn) || strings.Count(stderr.String(), "\n") != 1) {
 			t.Errorf("%v: printed %q, stderr %q", c.env, out.String(), stderr.String())
 		}
 	}

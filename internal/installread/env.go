@@ -60,6 +60,7 @@ const (
 	lvStrategy         // UV_INDEX_STRATEGY: unsafe-* lets any index answer for a name
 	lvUnverified       // COREPACK_ON_UNVERIFIED_DOWNLOAD: anything but error or prompt accepts an unsigned download
 	lvChecksum         // yarn's checksumBehavior: anything but throw accepts a changed archive
+	lvHome             // where the package managers read their user config (HOME-CONFIG-ENV-1): a config file alalanet cannot see in a folder homeDirWhy or lvPath's reading holds
 )
 
 // envLevers: variables read under their own name, in upper case.
@@ -82,8 +83,10 @@ var envLevers = func() map[string]lever {
 	set(lvAny, "ZDOTDIR SHELLOPTS BASHOPTS PS4 PROMPT_COMMAND COMSPEC GCONV_PATH LOCPATH")
 	set(lvShellEnv, "ENV")
 	set(lvPath, "SHELL")
-	// where tools look for their config: ~/.npmrc, ~/.config/uv/uv.toml, pip.conf, $PREFIX/etc/npmrc
-	set(lvPath, "HOME USERPROFILE APPDATA LOCALAPPDATA XDG_CONFIG_HOME XDG_CONFIG_DIRS PREFIX DESTDIR")
+	// where tools look for their config: ~/.npmrc, ~/.config/uv/uv.toml, pip.conf, $PREFIX/etc/npmrc; the user config's
+	// folders are lvHome (HOME-CONFIG-ENV-1)
+	set(lvHome, "HOME USERPROFILE APPDATA XDG_CONFIG_HOME LOCALAPPDATA XDG_CONFIG_DIRS PREFIX") // round 2, P3-3: the last three
+	set(lvPath, "DESTDIR")
 	// trust stores
 	set(lvTLS, "NODE_TLS_REJECT_UNAUTHORIZED")
 	set(lvPath, "NODE_EXTRA_CA_CERTS SSL_CERT_FILE SSL_CERT_DIR REQUESTS_CA_BUNDLE CURL_CA_BUNDLE OPENSSL_CONF PIP_CERT DENO_CERT "+
@@ -108,14 +111,18 @@ var envLevers = func() map[string]lever {
 	// PYTHON_PRESITE is not here: a release build of Python ignores it (debug builds alone import it)
 	set(lvWarnings, "PYTHONWARNINGS")
 	// pip
-	set(lvSource, "PIP_INDEX_URL PIP_EXTRA_INDEX_URL PIP_FIND_LINKS")
+	// pip's and uv's index options through the environment, from their parsers (pyIndexEnv: PIP_INDEX_URL, its hidden
+	// alias PIP_PYPI_URL, PIP_EXTRA_INDEX_URL, PIP_FIND_LINKS, UV_INDEX, UV_DEFAULT_INDEX, UV_INDEX_URL …; READER-VAR-OPT-1)
+	for k := range pyIndexEnv {
+		m[k] = lvSource
+	}
 	set(lvConfig, "PIP_CONFIG_FILE")
 	set(lvAny, "PIP_TRUSTED_HOST PIP_REQUIREMENT PIP_CONSTRAINT PIP_BUILD_CONSTRAINT PIP_EDITABLE PIP_REQUIREMENTS_FROM_SCRIPT PIP_GROUP")
 	set(lvPython, "PIP_PYTHON")
 	set(lvKeyring, "PIP_KEYRING_PROVIDER")
 	set(lvKeyringUV, "UV_KEYRING_PROVIDER")
 	// uv
-	set(lvSource, "UV_INDEX_URL UV_EXTRA_INDEX_URL UV_INDEX UV_DEFAULT_INDEX UV_FIND_LINKS UV_PYTHON_INSTALL_MIRROR "+
+	set(lvSource, "UV_PYTHON_INSTALL_MIRROR "+
 		"UV_PYPY_INSTALL_MIRROR UV_PYTHON_DOWNLOADS_JSON_URL UV_ASTRAL_MIRROR_URL UV_GRAALPY_INSTALL_MIRROR UV_PYODIDE_INSTALL_MIRROR "+
 		"UV_INSTALLER_GITHUB_BASE_URL UV_INSTALLER_GHE_BASE_URL UV_DOWNLOAD_URL UV_S3_ENDPOINT_URL UV_GCS_ENDPOINT_URL "+
 		"UV_AZURE_ENDPOINT_URL UV_MALWARE_CHECK_URL")
@@ -126,6 +133,9 @@ var envLevers = func() map[string]lever {
 	set(lvStrategy, "UV_INDEX_STRATEGY")
 	set(lvOn, "UV_NO_VERIFY_HASHES UV_INSECURE_NO_ZIP_VALIDATION UV_SKIP_WHEEL_FILENAME_CHECK")
 	set(lvPath, "UV_PYTHON_INSTALL_DIR PIPX_HOME PIPX_GLOBAL_HOME PIPX_SHARED_LIBS")
+	// the version managers' roots: eval "$(pyenv init -)" puts <PYENV_ROOT>/shims first on PATH (round 33)
+	set(lvPath, "PYENV_ROOT RBENV_ROOT NODENV_ROOT GOENV_ROOT FNM_DIR CONDA_EXE CONDA_ROOT CONDA_PYTHON_EXE CONDA_ENVS_PATH "+
+		"CONDA_ENVS_DIRS CONDA_PKGS_DIRS DIRENV_CONFIG XDG_DATA_HOME")
 	set(lvVenv, "UV_PROJECT_ENVIRONMENT VIRTUAL_ENV CONDA_PREFIX")
 	// Yarn 1's config file, pnpm's loader
 	set(lvConfig, "YARN_CONFIG")
@@ -224,7 +234,33 @@ func presentName(k string) bool {
 
 // judgeEnv gives the reason, if any, for one variable and its value.
 func (e *extraParse) judgeEnv(k, v string) {
+	note := ""
+	switch {
+	case e.entryEnv && pathName(k) && leverOf(k) != lvHome:
+		// an MCP entry's value reaches the server as written: a ~ element of a search path or a path lever is the folder
+		// ./~ of its working folder, said as round 2 says it for HOME (entryHomeConfigWhy; round 8, D)
+		if w, wrote := argTildeValue(k, strings.TrimSpace(v), pathListSep(v)); wrote != 0 {
+			v, note = w, whyDirLiteral
+		}
+	case (e.win || e.argEnv) && pathName(k):
+		// PowerShell and cmd never expand ~ in a value, nor zsh, dash or bash --posix in an MCP add's -e K=~ word (each
+		// list element of it): the folder it names, and the reason says bash outside POSIX mode would use the home
+		// (HOME-CONFIG-ENV-1 rounds 3–5); PowerShell's list is a ":" one where it has no ";" (round 8, E)
+		sep := ":"
+		if e.win {
+			sep = winListSep(v, e.pwsh)
+		}
+		if w, wrote := argTildeValue(k, strings.TrimSpace(v), sep); wrote != 0 {
+			v = w
+			if !e.win && e.noShell == 0 && !e.argGlued {
+				note = argTildeNote(wrote)
+			}
+		}
+	}
 	if why := e.leverWhy(leverOf(k), k, v); why != "" {
+		if note != "" {
+			why = withArgTildeNote(why, note)
+		}
 		e.envMiss(why)
 	}
 }
@@ -234,7 +270,7 @@ func (e *extraParse) judgeEnv(k, v string) {
 // program or an option string would be one ("UV_PYTHON": 3.12).
 func (e *extraParse) envKey(k string) {
 	switch leverOf(k) {
-	case lvNone, lvDirs, lvPath, lvVenv, lvPython, lvInterp, lvProgram, lvNodeOpts, lvBunOpts, lvShellEnv:
+	case lvNone, lvDirs, lvPath, lvHome, lvVenv, lvPython, lvInterp, lvProgram, lvNodeOpts, lvBunOpts, lvShellEnv:
 	default:
 		e.envMiss(whyOverride + " (" + clip(k, 60) + ")")
 	}
@@ -246,14 +282,29 @@ func (e *extraParse) leverWhy(lv lever, k, v string) string {
 	plain := whyOverride + " (" + name + ")"
 	points := func(why string) string {
 		if e.as != "" {
-			return why + " (" + name + " points at " + shown(e.as) + ")" // as the line spells it
+			return why + " (" + name + " points at " + shown(e.as) + ")" // as the line spells it: PowerShell's or cmd's, no ~name
 		}
 		if v == "" {
 			return why + " (" + name + " is empty: the current folder)"
 		}
-		return why + " (" + name + " points at " + shown(v) + ")"
+		return why + " (" + name + " points at " + shown(v) + tildeWhy(v) + ")"
 	}
 	lv0 := strings.ToLower(strings.TrimSpace(v))
+	switch lv {
+	case lvDirs, lvPath, lvVenv, lvPython, lvInterp, lvProgram:
+		// A value whose first element has a tilde-prefix — another user's home or a folder of the project (~name), the
+		// current folder (~+, ~-, ~0) — is held whatever the lever, before its own test: the owner's rule, any ~name is
+		// held (round 6), and a bare ~m$ for UV_PYTHON or PIP_PYTHON, a folder of the current one first, otherwise
+		// passed cwdFirst (round 8, R1). The home (~, ~/…) keeps each lever's own rule.
+		// uv's and pip's --python and UV_PYTHON take a version request, ~=3.12 among them (pyRequest): no folder
+		if ds := strings.Split(v, pathListSep(v)); listTilde(ds, 0) && !(lv == lvPython && pyRequest.MatchString(lv0)) {
+			why := whyOverride
+			if lv == lvDirs {
+				why = whyLoads
+			}
+			return points(why)
+		}
+	}
 	switch lv {
 	case lvAny:
 		return plain
@@ -275,6 +326,19 @@ func (e *extraParse) leverWhy(lv lever, k, v string) string {
 	case lvPath:
 		if e.untrustedPathX(v, false) {
 			return points(whyOverride)
+		}
+	case lvHome:
+		// the line reader's rule (dirWhy; for an MCP entry's or a server's env, entryDirWhy: round 2, P2-1), and a value
+		// past maxPathValue, which is not read folder by folder
+		why := homeConfigWhy(k, v)
+		if e.entryEnv {
+			why = entryHomeConfigWhy(k, v)
+		}
+		if why == "" && len(v) > maxPathValue {
+			why = homeReason(name, shown(v), "longer than alalanet reads a folder")
+		}
+		if why != "" {
+			return why
 		}
 	case lvVenv:
 		// .venv, $PWD/.venv, env: the project's own virtualenv
@@ -642,14 +706,33 @@ func (e *extraParse) pmFlag(cmd, name, val string, hasVal bool, why string) {
 			e.miss(why) // a bunfig.toml of the line's choosing: its registry and preloads
 		}
 		return
+	case cmd == "npm" || cmd == "npx":
+		// nopt reads -name as --name, and expands a shorthand, a cluster and a key's unambiguous prefix: each key the
+		// word sets in any npm version is judged, the word's own name too (READER-NPM-ABBREV-1)
+		if name = npmTwoDash(name); strings.HasPrefix(name, "--") {
+			key, neg := strings.CutPrefix(name[2:], "no-")
+			e.pmKey(key, neg, name, val, why)
+			for _, k := range npmOptionKeys(name) {
+				if k != key {
+					e.pmKey(k, npmNegated(name[2:]), name, val, why)
+				}
+			}
+		}
+		return
 	case !strings.HasPrefix(name, "--"):
 		return
 	}
 	key, neg := strings.CutPrefix(name[2:], "no-")
+	e.pmKey(key, neg, name, val, why)
+}
+
+// pmKey judges one config key an npm, pnpm, Yarn or bun option word sets (name: the word as written), negated by
+// "no-" or set to val.
+func (e *extraParse) pmKey(key string, neg bool, name, val, why string) {
 	lv := pmKeyLever(key)
 	switch c := compactKey(key); {
 	case c == "prefix", c == "package", c == "call":
-		// --prefix ./app installs a subfolder; -p/--package and -c/--call the production reader and hasCall
+		// --prefix ./app installs a subfolder; -p/--package and -c/--call the production reader and npmCall
 		// read. (A key that is no lever has no reason in leverWhy.)
 	case neg:
 		if lv == lvOff {
@@ -727,8 +810,14 @@ func (e *extraParse) configSet(cmd string, rest []string) {
 		}
 		switch {
 		case pip:
-			if _, after, ok := strings.Cut(k, "."); ok {
-				k = after // global.index-url
+			if sec, after, ok := strings.Cut(k, "."); ok {
+				// pip install reads the sections global and install, then the environment (cli/parser.py
+				// _get_ordered_configuration_items: "global", the command's name, ":env:"); a key is the long option's name,
+				// "_" as "-" (configuration.py _normalize_name): global.pypi-url and install.pypi_url are PIP_PYPI_URL
+				if sec = strings.ToLower(sec); sec != "global" && sec != "install" {
+					continue
+				}
+				k = after
 			}
 			e.env("PIP_"+strings.ToUpper(strings.ReplaceAll(k, "-", "_")), v)
 		case cmd == "yarn":

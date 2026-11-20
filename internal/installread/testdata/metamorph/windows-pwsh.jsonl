@@ -1,0 +1,54 @@
+{"line":".\\venv\\Scripts\\pip.exe install requests","pwsh":[[".\\venv\\Scripts\\pip.exe","install","requests"]]}
+{"line":".\\venv\\Scripts\\pip install requests","pwsh":[[".\\venv\\Scripts\\pip","install","requests"]]}
+{"line":"venv\\Scripts\\pip.exe install requests","pwsh":[["venv\\Scripts\\pip.exe","install","requests"]]}
+{"line":"venv\\Scripts\\pip install requests","pwsh":[["venv\\Scripts\\pip","install","requests"]]}
+{"line":".venv\\Scripts\\pip install requests","pwsh":[[".venv\\Scripts\\pip","install","requests"]]}
+{"line":".\\.venv\\Scripts\\pip.exe install requests","pwsh":[[".\\.venv\\Scripts\\pip.exe","install","requests"]]}
+{"line":".\\venv\\Scripts\\python.exe -m pip install requests","pwsh":[[".\\venv\\Scripts\\python.exe","-m","pip","install","requests"]]}
+{"line":"venv\\Scripts\\python -m pip install requests","pwsh":[["venv\\Scripts\\python","-m","pip","install","requests"]]}
+{"line":".venv\\Scripts\\python.exe -m pip install requests","pwsh":[[".venv\\Scripts\\python.exe","-m","pip","install","requests"]]}
+{"line":"..\\venv\\Scripts\\pip.exe install requests","pwsh":[["..\\venv\\Scripts\\pip.exe","install","requests"]]}
+{"line":".\\node_modules\\.bin\\npx.cmd -y mcp-server-fetch","pwsh":[[".\\node_modules\\.bin\\npx.cmd","-y","mcp-server-fetch"]]}
+{"line":"node_modules\\.bin\\npx -y mcp-server-fetch","pwsh":[["node_modules\\.bin\\npx","-y","mcp-server-fetch"]]}
+{"line":".\\node_modules\\.bin\\npm.cmd i mcp-server-fetch","pwsh":[[".\\node_modules\\.bin\\npm.cmd","i","mcp-server-fetch"]]}
+{"line":"& .\\venv\\Scripts\\pip.exe install requests","pwsh":[[".\\venv\\Scripts\\pip.exe","install","requests"]]}
+{"line":"& \"C:\\Program Files\\nodejs\\npx.cmd\" -y mcp-server-fetch","pwsh":[["C:\\Program Files\\nodejs\\npx.cmd","-y","mcp-server-fetch"]]}
+{"line":"& 'C:\\Program Files\\nodejs\\npm.cmd' install mcp-server-fetch","pwsh":[["C:\\Program Files\\nodejs\\npm.cmd","install","mcp-server-fetch"]]}
+{"line":"C:\\Users\\me\\AppData\\Local\\Programs\\Python\\Python312\\Scripts\\pip.exe install requests","pwsh":[["C:\\Users\\me\\AppData\\Local\\Programs\\Python\\Python312\\Scripts\\pip.exe","install","requests"]]}
+{"line":"& \"$env:APPDATA\\npm\\npx.cmd\" -y mcp-server-fetch","pwsh":[["$env:APPDATA\\npm\\npx.cmd","-y","mcp-server-fetch"]]}
+{"line":"%APPDATA%\\npm\\npx.cmd -y mcp-server-fetch","pwsh":[["%APPDATA%\\npm\\npx.cmd","-y","mcp-server-fetch"]]}
+{"line":"cmd /c npx -y mcp-server-fetch","pwsh":[["cmd","/c","npx","-y","mcp-server-fetch"]]}
+{"line":"cmd /c \"npm i mcp-server-fetch\"","pwsh":[["cmd","/c","npm i mcp-server-fetch"]]}
+{"line":"cmd /c .\\venv\\Scripts\\pip.exe install requests","pwsh":[["cmd","/c",".\\venv\\Scripts\\pip.exe","install","requests"]]}
+{"line":"powershell -Command \".\\venv\\Scripts\\pip.exe install requests\"","pwsh":[["powershell","-Command",".\\venv\\Scripts\\pip.exe install requests"]]}
+{"line":"pwsh -c \".\\venv\\Scripts\\pip.exe install requests\"","pwsh":[["pwsh","-c",".\\venv\\Scripts\\pip.exe install requests"]]}
+{"line":"cd C:\\proj; .\\venv\\Scripts\\pip.exe install requests","pwsh":[["cd","C:\\proj"],[".\\venv\\Scripts\\pip.exe","install","requests"]]}
+{"line":"cd C:\\proj && venv\\Scripts\\pip install requests","pwsh":[["cd","C:\\proj"],["venv\\Scripts\\pip","install","requests"]]}
+{"line":"Set-Location C:\\proj; .\\venv\\Scripts\\pip.exe install requests","pwsh":[["Set-Location","C:\\proj"],[".\\venv\\Scripts\\pip.exe","install","requests"]]}
+{"line":"py -m pip install requests","pwsh":[["py","-m","pip","install","requests"]]}
+{"line":"npx.cmd -y mcp-server-fetch","pwsh":[["npx.cmd","-y","mcp-server-fetch"]]}
+{"line":"npm.cmd install mcp-server-fetch","pwsh":[["npm.cmd","install","mcp-server-fetch"]]}
+{"line":"pip.exe install requests","pwsh":[["pip.exe","install","requests"]]}
+{"line":"python.exe -m pip install requests","pwsh":[["python.exe","-m","pip","install","requests"]]}
+{"line":".\\pip.exe install requests","pwsh":[[".\\pip.exe","install","requests"]]}
+{"line":"Scripts\\pip install requests","pwsh":[["Scripts\\pip","install","requests"]]}
+{"line":"tools\\uv.exe pip install requests","pwsh":[["tools\\uv.exe","pip","install","requests"]]}
+{"line":".\\tools\\uv.exe tool install ruff","pwsh":[[".\\tools\\uv.exe","tool","install","ruff"]]}
+{"line":"bin\\npx -y mcp-server-fetch","pwsh":[["bin\\npx","-y","mcp-server-fetch"]]}
+{"line":"claude mcp add fetch -- .\\node_modules\\.bin\\npx.cmd -y mcp-server-fetch","pwsh":[["claude","mcp","add","fetch","--",".\\node_modules\\.bin\\npx.cmd","-y","mcp-server-fetch"]]}
+{"line":"claude mcp add fetch -- C:\\nodejs\\npx.cmd -y mcp-server-fetch","pwsh":[["claude","mcp","add","fetch","--","C:\\nodejs\\npx.cmd","-y","mcp-server-fetch"]]}
+{"line":"claude mcp add fetch -- cmd /c npx -y mcp-server-fetch","pwsh":[["claude","mcp","add","fetch","--","cmd","/c","npx","-y","mcp-server-fetch"]]}
+{"line":"uv run -p $env:LOCALAPPDATA\\Python\\pythoncore-3.14-64\\python.exe python -V","pwsh":[["uv","run","-p","$env:LOCALAPPDATA\\Python\\pythoncore-3.14-64\\python.exe","python","-V"]]}
+{"line":"uv run -p \"$env:LOCALAPPDATA\\Python\\pythoncore-3.14-64\\python.exe\" python -V","pwsh":[["uv","run","-p","$env:LOCALAPPDATA\\Python\\pythoncore-3.14-64\\python.exe","python","-V"]]}
+{"line":"uv run --python=$env:LOCALAPPDATA\\Programs\\Python\\Python312\\python.exe python -V","pwsh":[["uv","run","--python=$env:LOCALAPPDATA\\Programs\\Python\\Python312\\python.exe","python","-V"]]}
+{"line":"pipx run --python $env:LOCALAPPDATA\\Programs\\Python\\Python312\\python.exe ok-pkg","pwsh":[["pipx","run","--python","$env:LOCALAPPDATA\\Programs\\Python\\Python312\\python.exe","ok-pkg"]]}
+{"line":"uv run --with-requirements $env:USERPROFILE\\r.txt server.py","pwsh":[["uv","run","--with-requirements","$env:USERPROFILE\\r.txt","server.py"]]}
+{"line":"uv run -p $env:TEMP\\python.exe python -V","pwsh":[["uv","run","-p","$env:TEMP\\python.exe","python","-V"]]}
+{"line":"uv run -p \"$env:USERPROFILE\\..\\x\\python.exe\" python -V","pwsh":[["uv","run","-p","$env:USERPROFILE\\..\\x\\python.exe","python","-V"]]}
+{"line":"uv run -p $env:PWD\\python.exe python -V","pwsh":[["uv","run","-p","$env:PWD\\python.exe","python","-V"]]}
+{"line":"pipx run --python $env:TEMP\\python.exe ok-pkg","pwsh":[["pipx","run","--python","$env:TEMP\\python.exe","ok-pkg"]]}
+{"line":"uv run --with-requirements $env:TEMP\\r.txt server.py","pwsh":[["uv","run","--with-requirements","$env:TEMP\\r.txt","server.py"]]}
+{"line":"uv run --with-requirements %TEMP%\\r.txt server.py","pwsh":[["uv","run","--with-requirements","%TEMP%\\r.txt","server.py"]]}
+{"line":"uv run -p ~\\x\\python.exe python -V","pwsh":[["uv","run","-p","~\\x\\python.exe","python","-V"]]}
+{"line":".\\node_modules\\.bin\\npx.cmd -y ok-pkg","pwsh":[[".\\node_modules\\.bin\\npx.cmd","-y","ok-pkg"]]}
+{"line":"node_modules\\.bin\\npx.cmd -y ok-pkg","pwsh":[["node_modules\\.bin\\npx.cmd","-y","ok-pkg"]]}

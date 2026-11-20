@@ -24,23 +24,38 @@ func codexInput(tool, command string) string {
 }
 
 // fakeHook records what reaches alalanet's hook check and answers as the server does.
+// Every request is held to what /privacy says leaves the machine (ADR-0150 round 7, R7-P3-2): no query, and no header
+// but the ones Go's client adds (Accept-Encoding, Content-Length), Content-Type, the User-Agent and, with a token,
+// Authorization. TestHookRequestIsExactlyTheCommand checks the exact set.
 type fakeHook struct {
-	mu     sync.Mutex
-	bodies []string
-	agents []string
-	answer func(w http.ResponseWriter)
+	mu      sync.Mutex
+	bodies  []string
+	agents  []string
+	headers []http.Header // each request's headers, as they came
+	queries []string      // each request's raw query
+	answer  func(w http.ResponseWriter)
 }
+
+// hookHeaders: the headers a hook request may carry.
+var hookHeaders = map[string]bool{"Accept-Encoding": true, "Content-Length": true, "Content-Type": true, "User-Agent": true, "Authorization": true}
 
 func (f *fakeHook) server(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/hooks/claude-code" {
-			t.Errorf("request %s %s", r.Method, r.URL.Path)
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/hooks/claude-code" || r.URL.RawQuery != "" {
+			t.Errorf("request %s %s", r.Method, r.URL.RequestURI())
+		}
+		for k := range r.Header {
+			if !hookHeaders[k] {
+				t.Errorf("the hook request carries the header %s", k)
+			}
 		}
 		b, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
 		f.bodies = append(f.bodies, string(b))
 		f.agents = append(f.agents, r.Header.Get("User-Agent"))
+		f.headers = append(f.headers, r.Header.Clone())
+		f.queries = append(f.queries, r.URL.RawQuery)
 		f.mu.Unlock()
 		if f.answer != nil {
 			f.answer(w)

@@ -1,6 +1,9 @@
 package installread
 
-import "strings"
+import (
+	"bytes"
+	"strings"
+)
 
 // Command substitutions, read apart (ADR-0131, eighth round). The production splitter cuts a line at
 // "$(", "`" and ")" outside quotes and keeps a substitution inside double quotes as text, so
@@ -41,8 +44,40 @@ type substFrame struct {
 	hdTabs bool   // <<-: the delimiter line may start with tabs
 	paren  int    // plain parentheses open inside $(…)
 	brace  int    // ${…} open: quotes and "#" inside belong to the expansion, as the splitter takes them
+	grp    int    // zsh glob groups open on a word: a "#" inside starts no comment (round 37)
+	subs   []byte // the other parentheses open in it: 's' a subshell's, 'a' an array's (round 38)
+	cmt    int    // where a word starts after the frame's own opening, a subshell's ( or ) or an array's (: a "#" there is a comment
 	hd     string // a here-document's delimiter, from "<<" to the end of that line
 	buf    []byte
+}
+
+// open reads a ( at i that opens no substitution: a group on a word (the frame is inside one, or the ( follows a word
+// that is not NAME=), or a subshell's or an array's, after which a word starts (round 38).
+func (f *substFrame) open(i int) {
+	switch {
+	case f.grp > 0 || f.word && !bytes.HasSuffix(f.buf, []byte("=")):
+		f.grp++
+	case f.word:
+		f.subs, f.cmt = append(f.subs, 'a'), i+1
+	default:
+		f.subs, f.cmt = append(f.subs, 's'), i+1
+	}
+}
+
+// close reads a ) at i that closes no substitution: a group's, or a subshell's (or a case pattern's), after which a
+// word starts; after an array's the word goes on (bash).
+func (f *substFrame) close(i int) {
+	if f.grp > 0 {
+		f.grp--
+		return
+	}
+	kind := byte('s')
+	if n := len(f.subs); n > 0 {
+		kind, f.subs = f.subs[n-1], f.subs[:n-1]
+	}
+	if kind == 's' {
+		f.cmt = i + 1
+	}
 }
 
 // unnest takes the command substitutions of a line apart. pieces[0] is the line with a mark in place
@@ -144,6 +179,7 @@ func unnest(line string) (pieces []string, over bool) {
 			if c != '`' {
 				i++ // the "("
 			}
+			stack[len(stack)-1].cmt = i + 1 // $(#…: a word starts there
 		case c == '\\' && next == '\n': // a line continuation: no word starts or ends
 			f.buf = append(f.buf, c, next)
 			i++
@@ -158,7 +194,9 @@ func unnest(line string) (pieces []string, over bool) {
 		case c == '\'' || c == '"':
 			f.buf = append(f.buf, c)
 			f.q, f.word = c, true
-		case c == '#' && !f.word: // a comment to the end of the line; a backtick still ends its substitution
+		case c == '#' && !f.word && f.grp == 0 && (i == 0 || i == f.cmt || strings.IndexByte(" \t\r\n;&|", line[i-1]) >= 0):
+			// a comment to the end of the line, where a word starts and outside a group on a word (as in splitShell,
+			// round 37); a backtick still ends its substitution
 			j := i
 			for j < n && line[j] != '\n' && (line[j] != '`' || f.kind != '`') {
 				j++
@@ -228,6 +266,7 @@ func unnest(line string) (pieces []string, over bool) {
 			}
 			f.hd = hereWord(line[i+1:])
 		case c == '(' && (f.kind == '(' || f.kind == '<'):
+			f.open(i)
 			f.buf = append(f.buf, c)
 			f.paren++
 			f.word = false
@@ -238,9 +277,18 @@ func unnest(line string) (pieces []string, over bool) {
 			}
 			f.buf = append(f.buf, c)
 			f.paren--
+			f.close(i)
 			f.word = false
 		case c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == ';' || c == '|' || c == '&' ||
 			c == '(' || c == ')' || c == '{' || c == '}' || c == '<' || c == '>':
+			switch c {
+			case '(':
+				f.open(i)
+			case ')':
+				f.close(i)
+			case '\n':
+				f.grp = 0
+			}
 			f.buf = append(f.buf, c)
 			f.word = false
 		default:

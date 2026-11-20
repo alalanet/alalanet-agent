@@ -128,8 +128,13 @@ func TestSparseKeepsItsAnswers(t *testing.T) {
 			t.Fatalf("Sparse(%+q) = %v, round 2's %v", s, got, want)
 		}
 		ivs := strings.ContainsFunc(s, func(r rune) bool { return r >= 0xE0100 && r <= 0xE01EF })
-		if n := MisplacedMarks(s); !ivs && (n == 0) != sparseRound2(s) { // the ideographic bound is not MisplacedMarks'
-			t.Fatalf("MisplacedMarks(%+q) = %d, Sparse %v", s, n, Sparse(s))
+		if n, _ := misplacedMarks([]rune(s), false, false); !ivs && (n == 0) != sparseRound2(s) { // the ideographic bound is not MisplacedMarks'
+			t.Fatalf("misplacedMarks(%+q) without formats = %d, Sparse %v", s, n, Sparse(s))
+		}
+		// Round 7 (PRE-1): the detectors' rule keeps the marks number and date formats write too, so it
+		// takes more marks for in place than Sparse does, never fewer.
+		if n := MisplacedMarks(s); sparseRound2(s) && !ivs && n != 0 {
+			t.Fatalf("MisplacedMarks(%+q) = %d, and Sparse takes it", s, n)
 		}
 	}
 }

@@ -5,12 +5,21 @@
 //	alalanet-agent hash <file>          sha256 of a file
 //	alalanet-agent check-file <file>    who signed this exact file (before installing a skill/MCP package)
 //	alalanet-agent mcp                  run as a local MCP server over stdio (key never enters the model)
-//	alalanet-agent hook <runtime>       a runtime's pre-tool command hook (codex, cursor, copilot, antigravity): install commands go to alalanet's check (RT-1)
+//	alalanet-agent hook <runtime>       a runtime's pre-tool command hook (claude-code, codex, cursor, copilot, antigravity): install commands go to alalanet's check (RT-1); MCP tools of claude-code and cursor are checked here (VERIFY-AUTO-1)
+//	alalanet-agent mcp-verify [--project] check the tools of every configured remote MCP server (Claude Code, Cursor) and print the result
+//	alalanet-agent mcp-approve <name>   accept a server's current tool set as this machine's; asks on the user's own terminal
+//	alalanet-agent policy-approve       accept the shell startup files as they are now for the policy's exceptions; asks on the user's own terminal
 //	alalanet-agent version
 //
 // Environment: ALALANET_API (default https://alalanet.com), ALALANET_AGENT_KEY_FILE; for hook, a plan token in
 // ALALANET_TOKEN or in the file ALALANET_TOKEN_FILE names (sent as Authorization: Bearer, never printed), and
-// ALALANET_FAIL_CLOSED=1 to hold an install alalanet could not check instead of letting it go with a warning.
+// ALALANET_FAIL_CLOSED=1 to hold an install alalanet could not check instead of letting it go with a warning (and an MCP
+// server's tools that could not be checked); ALALANET_MCP_UNVERIFIED=hold to hold MCP servers that cannot be read by
+// design too (they need authorization, run on this machine or sit on a private network). The MCP check keeps its state
+// in $XDG_CACHE_HOME/alalanet/mcp (else ~/.cache/alalanet/mcp; %LOCALAPPDATA%\alalanet\mcp on Windows).
+// The hook also applies, locally and never sent, the organisation's policy (managedPolicyPath: /etc/alalanet/policy.yml,
+// /Library/Application Support/alalanet/policy.yml, C:\Program Files\alalanet\policy.yml) and the .alalanet.yml at the root
+// of the git repository it works in (REPO-POL-1, ADR-0174).
 //
 // The events each runtime runs hook on: hookUsage.
 package main
@@ -33,6 +42,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/alalanet/alalanet-agent/agentkit"
+	"github.com/alalanet/alalanet-agent/internal/mcpverify"
 )
 
 var version = "dev"
@@ -40,21 +50,30 @@ var version = "dev"
 func main() { os.Exit(runMain(os.Args[1:], os.Stderr)) }
 
 // runMain runs one command and gives the process's exit code; an error is one line on stderr.
-func runMain(args []string, stderr io.Writer) int {
-	err := run(args)
-	if err != nil {
+func runMain(args []string, stderr io.Writer) int { return mainExit(run(args), stderr) }
+
+// mainExit writes err on stderr and gives the exit code; hook codex's deny is its reason alone, which Codex shows as the
+// block's reason.
+func mainExit(err error, stderr io.Writer) int {
+	var block hookBlock
+	switch {
+	case errors.As(err, &block):
+		fmt.Fprintln(stderr, block.reason)
+	case err != nil:
 		fmt.Fprintln(stderr, "error:", err)
 	}
 	return exitCode(err)
 }
 
-// exitCode: 0 on success, 2 for a hook that cannot run as configured (hookUsageError), 1 for any other error.
+// exitCode: 0 on success, 2 for a hook that cannot run as configured (hookUsageError) and for hook codex's deny
+// (hookBlock), 1 for any other error.
 func exitCode(err error) int {
 	var usage hookUsageError
+	var block hookBlock
 	switch {
 	case err == nil:
 		return 0
-	case errors.As(err, &usage):
+	case errors.As(err, &usage), errors.As(err, &block):
 		return 2
 	}
 	return 1
@@ -69,7 +88,7 @@ func api() string {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: alalanet-agent init | whoami | hash <file> | check-file <file> | mcp | hook <runtime> | version\n  " + hookUsage)
+		return errors.New("usage: alalanet-agent init | whoami | hash <file> | check-file <file> | mcp | hook <runtime> | mcp-verify [--project] | mcp-approve <name> | policy-approve | version\n  " + hookUsage)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -115,8 +134,35 @@ func run(args []string) error {
 			return hookUsageError{"usage: " + hookUsage}
 		}
 		token, bad := hookToken(os.Getenv, func(name string) (io.ReadCloser, error) { return os.Open(name) })
-		return runHookContext(ctx, args[1], os.Stdin, os.Stdout, hookCall{client: hookClient(), api: api(), token: token, tokenBad: bad,
-			stderr: os.Stderr, failClosed: failClosed(os.Getenv("ALALANET_FAIL_CLOSED"))})
+		home, _ := os.UserHomeDir()
+		return runHookMain(ctx, args[1], os.Stdin, os.Stdout, hookCall{client: hookClient(), api: api(), token: token, tokenBad: bad,
+			stderr: os.Stderr, failClosed: failClosed(os.Getenv("ALALANET_FAIL_CLOSED")), mcp: newVerifier(os.Getenv, home), home: home,
+			claudeConfig: mcpverify.ClaudeConfigFile(os.Getenv, home), policy: defaultPolicyFiles(), getenv: os.Getenv})
+	case "mcp-verify":
+		if len(args) > 2 || len(args) == 2 && args[1] != "--project" {
+			return errors.New("usage: mcp-verify [--project] (--project: also the servers of this folder's .mcp.json and .cursor/mcp.json that Claude Code has not approved)")
+		}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		cwd, _ := os.Getwd()
+		return mcpVerify(ctx, os.Stdout, newVerifier(os.Getenv, home), envPaths(home), cwd, len(args) == 2)
+	case "mcp-approve":
+		if len(args) != 2 {
+			return errors.New("usage: mcp-approve <name> (the server's name in Claude Code's or Cursor's configuration)")
+		}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		cwd, _ := os.Getwd()
+		return mcpApprove(ctx, os.Stdout, newVerifier(os.Getenv, home), envPaths(home), cwd, args[1], openTTY)
+	case "policy-approve":
+		if len(args) != 1 {
+			return errors.New("usage: policy-approve")
+		}
+		return policyApprove(os.Stdout, defaultPolicyFiles(), openTTY)
 	case "mcp":
 		k, _, err := agentkit.Load(agentkit.DefaultKeyFile(), api(), true)
 		if err != nil {
@@ -165,7 +211,7 @@ func serveMCP(ctx context.Context, k *agentkit.Kit) error {
 			out, err := k.PostBoard(ctx, in)
 			return nil, out, err
 		})
-	mcp.AddTool(srv, &mcp.Tool{Name: "link_domain", Description: "Use to prove you operate a domain, so other agents trust your passport more. First publish https://<domain>/.well-known/nostr.json containing {\"names\":{\"_\":\"<your pubkey>\"}} (whoami gives the pubkey), then call with domain (plain host, e.g. agent.example.com). alalanet fetches the file (NIP-05) and records a verified link in your passport. One domain links to one agent key. Errors name the cause: the file is missing or not JSON, it lists another pubkey, or the domain is already linked to another key; fix and call again. To link the wallet you pay with, use link_wallet. Returns the logged link.", Annotations: rw()},
+	mcp.AddTool(srv, &mcp.Tool{Name: "link_domain", Description: "Use to prove you operate a domain, so other agents trust your passport more. First publish https://<domain>/.well-known/nostr.json containing {\"names\":{\"_\":\"<your pubkey>\"}} (whoami gives the pubkey), then call with domain (plain host, e.g. agent.example.com). alalanet fetches the file (NIP-05) and records a verified link in your passport. Only the name \"_\" proves the domain; your key under any other name does not. One domain links to one agent key at a time: a later link by the key the domain names under \"_\" moves it, and alalanet logs the move. Keep the file published: alalanet reads it again daily, and a link it no longer proves goes stale and leaves your passport's verified links. Errors name the cause: the file is missing or not JSON, or it does not list your pubkey under \"_\"; fix and call again. To link the wallet you pay with, use link_wallet. Returns the logged link.", Annotations: rw()},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 			Domain string `json:"domain" jsonschema:"host name you control, e.g. agent.example.com"`
 		}) (*mcp.CallToolResult, map[string]any, error) {
@@ -300,4 +346,9 @@ func view(v any) map[string]any {
 	var m map[string]any
 	_ = json.Unmarshal(b, &m)
 	return m
+}
+
+// envPaths are the runtimes' configuration places as this process's environment gives them.
+func envPaths(home string) mcpPaths {
+	return mcpPaths{home: home, claudeConfig: mcpverify.ClaudeConfigFile(os.Getenv, home), codexHome: mcpverify.CodexHome(os.Getenv, home)}
 }

@@ -420,19 +420,41 @@ func WithoutBenign(s string) string {
 //     (MaxIdeographicSelectors): each selects a registered glyph variant, chiefly of a name (UTS #37),
 //     and five place names hold five; each also spells a byte, so an event keeps eight in all its
 //     fields together (IdeographicSelectors).
-func Sparse(s string) bool { return misplacedMarks(s, true) == 0 }
+func Sparse(s string) bool {
+	n, _ := misplacedMarks([]rune(s), true, false)
+	return n == 0
+}
 
 // MisplacedMarks counts the honest marks of s (WithoutBenign's set) that stand where no text needs
 // them, by Sparse's rules: each mark beside another, each soft hyphen at a word's edge, each Mongolian
 // vowel separator but before a final a or e, and each directional mark of a run Sparse refuses (A1
 // round 3, PE-6: the detectors judge the honest marks by where they stand, as signed text is judged).
 // The ideographic variation selectors are not bounded here: Selectors bounds them per source.
-func MisplacedMarks(s string) int { return misplacedMarks(s, false) }
+//
+// One rule more than Sparse's (ADR-0167 round 7, PRE-1): in text that holds a right-to-left letter
+// a directional mark is out of place only beside one alike or in a run of three. Right-to-left text
+// writes them wherever a direction is to be settled: the number and date formats of CLDR as ICU's Intl
+// writes them ("15 RLM /11 RLM /2026", "50 LRM % LRM", "RLM LRM -1,234.50 RLM $", "A, RLM B"), and
+// Apple's Hebrew and Arabic strings before a Latin word, after a comma, at a line's start two of them
+// ("RLM LRM tab"), and inside a word after a one-letter prefix. Every mark in place counts toward the
+// source's bound (Selectors, RTLLettersPerMark), so this moves marks from hidden units to that bound,
+// which grows only with the right-to-left letters a person sees. Sparse keeps its rule: signed text has
+// no source to bound it.
+func MisplacedMarks(s string) int {
+	n, _ := misplacedMarks([]rune(s), false, true)
+	return n
+}
 
-// misplacedMarks is MisplacedMarks; ideographic: the ideographic selectors past the bound count too
-// (Sparse's rule for signed text). Sparse is true exactly when it counts none.
-func misplacedMarks(s string, ideographic bool) int {
-	rs := []rune(s)
+// directionalMark: LRM, RLM and ALM.
+func directionalMark(r rune) bool { return r == 0x200E || r == 0x200F || r == 0x061C }
+
+// misplacedMarks is MisplacedMarks with each mark it counts flagged in bad (a mark beside another
+// and in a run Sparse refuses is counted twice, flagged once); ideographic: the ideographic
+// selectors past the bound count too (Sparse's rule for signed text); formats: the runs that number
+// and date formats write keep their marks (the detectors', not Sparse's). Sparse is true exactly when
+// it counts none with ideographic and without formats.
+func misplacedMarks(rs []rune, ideographic, formats bool) (n int, bad []bool) {
+	bad = make([]bool, len(rs))
 	honest := func(i int) bool {
 		switch r := rs[i]; {
 		case r == 0x200E, r == 0x200F, r == 0x061C, r == 0x00AD, r == 0x180E:
@@ -456,24 +478,12 @@ func misplacedMarks(s string, ideographic bool) int {
 	mongolian := func(i int) bool {
 		return i >= 0 && i < len(rs) && unicode.IsLetter(rs[i]) && unicode.Is(unicode.Mongolian, rs[i])
 	}
-	n, rtl, ivs, ideographs := 0, false, 0, 0
-	for i, r := range rs {
-		switch {
-		case i > 0 && honest(i) && honest(i-1):
-			n++
-		case r == 0x00AD && (!syllable(segment(i-1, -1)) || !syllable(segment(i+1, 1))):
-			n++
-		case r == 0x180E && !(mongolian(i-1) && i+1 < len(rs) && (rs[i+1] == 0x1820 || rs[i+1] == 0x1821) && !mongolian(i+2)):
-			n++
-		case r >= 0xE0100 && r <= 0xE01EF:
-			ivs++
-		case unicode.Is(unicode.Ideographic, r):
-			ideographs++
+	rtl := false
+	for _, r := range rs {
+		if unicode.IsLetter(r) && rightToLeft(r) {
+			rtl = true
+			break
 		}
-		rtl = rtl || unicode.IsLetter(r) && rightToLeft(r)
-	}
-	if bound := min(ideographs, MaxIdeographicSelectors); ideographic && ivs > bound {
-		n += ivs - bound
 	}
 	// The directional marks, run by run of characters that are no letters (nor their marks).
 	dir := func(r rune) int {
@@ -481,6 +491,17 @@ func misplacedMarks(s string, ideographic bool) int {
 			return 2
 		}
 		return 1
+	}
+	formatted := make([]bool, len(rs)) // the marks the detectors take for in place past Sparse's rule (formats)
+	// written: the run rs[i:j] holds its directional marks as right-to-left text writes them: no two
+	// alike side by side and no three in a row.
+	written := func(i, j int) bool {
+		for k := i; k < j; k++ {
+			if directionalMark(rs[k]) && (k+1 < j && rs[k+1] == rs[k] || k+2 < j && directionalMark(rs[k+1]) && directionalMark(rs[k+2])) {
+				return false
+			}
+		}
+		return true
 	}
 	last := 0 // the direction of the last letter before the run; 0 at the text's start
 	for i := 0; i < len(rs); {
@@ -495,7 +516,7 @@ func misplacedMarks(s string, ideographic bool) int {
 		firstMark, lastMark, firstDigit, lastDigit := -1, -1, -1, -1
 		for ; j < len(rs) && !unicode.IsLetter(rs[j]) && !unicode.IsMark(rs[j]); j++ {
 			switch r := rs[j]; {
-			case r == 0x200E, r == 0x200F, r == 0x061C:
+			case directionalMark(r):
 				if marks++; firstMark < 0 {
 					firstMark = j
 				}
@@ -524,12 +545,42 @@ func misplacedMarks(s string, ideographic bool) int {
 			}
 		}
 		edge = edge || j == len(rs)
-		if marks > 0 && (!rtl || marks > 1 && !wrapped || !(digit || edge || last != next && others > 0)) {
+		switch {
+		case marks == 0:
+		case formats && rtl && written(i, j):
+			for k := i; k < j; k++ {
+				formatted[k] = directionalMark(rs[k])
+			}
+		case !rtl || marks > 1 && !wrapped || !(digit || edge || last != next && others > 0):
 			n += marks
+			for k := i; k < j; k++ {
+				bad[k] = bad[k] || directionalMark(rs[k])
+			}
 		}
 		i = j
 	}
-	return n
+	ivs, ideographs := 0, 0
+	for i, r := range rs {
+		switch {
+		case i > 0 && honest(i) && honest(i-1) && !(formatted[i] && formatted[i-1]):
+			n++
+			bad[i] = true
+		case r == 0x00AD && (!syllable(segment(i-1, -1)) || !syllable(segment(i+1, 1))):
+			n++
+			bad[i] = true
+		case r == 0x180E && !(mongolian(i-1) && i+1 < len(rs) && (rs[i+1] == 0x1820 || rs[i+1] == 0x1821) && !mongolian(i+2)):
+			n++
+			bad[i] = true
+		case r >= 0xE0100 && r <= 0xE01EF:
+			ivs++
+		case unicode.Is(unicode.Ideographic, r):
+			ideographs++
+		}
+	}
+	if bound := min(ideographs, MaxIdeographicSelectors); ideographic && ivs > bound {
+		n += ivs - bound
+	}
+	return n, bad
 }
 
 // Unseen counts the characters of s a person does not see beyond those honest text carries, for the
@@ -551,11 +602,143 @@ func misplacedMarks(s string, ideographic bool) int {
 // A code point of the emoji blocks that Go's tables leave unassigned is counted as an emoji
 // (laterEmoji, round 4): it may be one a later Unicode version added, drawn as itself or as a missing
 // glyph's box, and an honest server's newer emoji cost it nothing until Go's tables move.
-func Unseen(s string) int {
+//
+// The honest marks in place are not counted here: one by one they are honest, in number they spell
+// bits, and Selectors bounds them per source (MaxHonestMarks). Nor are the directional isolates in
+// balanced pairs, nor its embeddings, in text that holds a right-to-left letter (Reorders, round 7):
+// they count with the marks in place.
+func Unseen(s string) int { return Measure(s).Unseen }
+
+// Counts is what the detectors of text an agent reads as its instructions count in one text (Measure).
+type Counts struct {
+	Unseen      int // Unseen
+	Hyphens     int // the soft hyphens and Mongolian vowel separators in place
+	Directional int // the LRM, RLM and ALM in place, and the isolates and embeddings in balanced pairs (a pair one)
+	RTL         int // the right-to-left letters
+}
+
+// Measure counts s in one pass for Unseen, HonestMarks and Selectors (round 7, R6-COST-1: the marks
+// were judged twice).
+func Measure(s string) Counts {
 	if plain(s) {
-		return 0
+		return Counts{}
 	}
-	t := strings.Map(func(r rune) rune {
+	rs := []rune(unseenText(s))
+	var c Counts
+	for _, r := range rs {
+		if unicode.IsLetter(r) && rightToLeft(r) {
+			c.RTL++
+		}
+	}
+	if pairs, in := isolatePairs(rs); c.RTL > 0 && pairs > 0 {
+		c.Directional = pairs
+		kept := rs[:0:0]
+		for i, r := range rs {
+			if !in[i] {
+				kept = append(kept, r)
+			}
+		}
+		rs = kept
+	}
+	t := string(rs)
+	out, n := TextCount(WithoutBenign(t))
+	mis, bad := misplacedMarks(rs, false, true)
+	c.Unseen = n + mis + latinJoiners(out)
+	for i, r := range rs {
+		switch {
+		case bad[i]:
+		case r == 0x00AD, r == 0x180E:
+			c.Hyphens++
+		case directionalMark(r):
+			c.Directional++
+		}
+	}
+	return c
+}
+
+// isolatePairs finds the directional isolates and embeddings of rs in balanced pairs (in, two per
+// pair): an isolate initiator (LRI, RLI or FSI, U+2066-2068) and the PDI (U+2069) that closes it, or
+// an embedding (LRE or RLE, U+202A-202B) and the PDF (U+202C) that closes it, in the same line, with
+// something between them but other directional controls and marks. Apple's right-to-left
+// localizations set off each name they insert with a pair (U+2068 Apple Inc. U+2069; older strings
+// LRE ... PDF around an address or a number); a control alone, or a pair around nothing, is none. The
+// overrides (LRO and RLO, U+202D-202E) are never in a pair: they turn the letters inside against
+// their own direction.
+func isolatePairs(rs []rune) (pairs int, in []bool) {
+	var isolates, embeddings []int
+	control := func(x rune) bool { return bidiControl(x) || directionalMark(x) }
+	closes := func(open *[]int, i int) {
+		o := (*open)[len(*open)-1]
+		*open = (*open)[:len(*open)-1]
+		for _, x := range rs[o+1 : i] {
+			if !control(x) {
+				if in == nil {
+					in = make([]bool, len(rs))
+				}
+				in[o], in[i] = true, true
+				pairs++
+				return
+			}
+		}
+	}
+	for i, r := range rs {
+		switch {
+		case r >= 0x2066 && r <= 0x2068:
+			isolates = append(isolates, i)
+		case r == 0x2069 && len(isolates) > 0:
+			closes(&isolates, i)
+		case r == 0x202A || r == 0x202B:
+			embeddings = append(embeddings, i)
+		case r == 0x202C && len(embeddings) > 0:
+			closes(&embeddings, i)
+		case r == '\n':
+			isolates, embeddings = isolates[:0], embeddings[:0]
+		}
+	}
+	return pairs, in
+}
+
+// Reorders reports what changes the order a person sees of the text around it: a directional
+// override (U+202D-202E), or an isolate or embedding (U+2066-2069, U+202A-202C) that is not in a
+// balanced pair in text that holds a right-to-left letter (isolatePairs; round 7, PRE-1: Apple's
+// right-to-left localizations write a pair around each name they insert, and text without right-to-
+// left letters needs none).
+func Reorders(s string) bool {
+	return strings.ContainsFunc(s, bidiControl) && len(StripReorders(s)) < len(s)
+}
+
+// bidiControl: the directional embeddings and overrides U+202A-202E and the isolates U+2066-2069.
+func bidiControl(r rune) bool { return (r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069) }
+
+// StripReorders returns s without what Reorders reports: its overrides, and the isolates and
+// embeddings that are not in balanced pairs in text that holds a right-to-left letter. The pairs stay.
+func StripReorders(s string) string {
+	if !strings.ContainsFunc(s, bidiControl) {
+		return s
+	}
+	rs := []rune(s)
+	rtl := false
+	for _, r := range rs {
+		if unicode.IsLetter(r) && rightToLeft(r) {
+			rtl = true
+			break
+		}
+	}
+	_, in := isolatePairs(rs)
+	var b strings.Builder
+	for i, r := range rs {
+		if bidiControl(r) && !(rtl && in != nil && in[i]) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// unseenText is s as Unseen judges it: without its variation selectors, its line ends as line feeds,
+// and the code points laterEmoji takes for emoji as an emoji.
+func unseenText(s string) string {
+	return strings.Map(func(r rune) rune {
 		switch {
 		case unicode.Is(unicode.Variation_Selector, r):
 			return -1
@@ -564,8 +747,39 @@ func Unseen(s string) int {
 		}
 		return r
 	}, strings.ReplaceAll(s, "\r\n", "\n")) // Map writes a byte that is not UTF-8 as U+FFFD, which is seen
-	out, n := TextCount(WithoutBenign(t))
-	return n + MisplacedMarks(t) + latinJoiners(out)
+}
+
+// honestMark: the marks of WithoutBenign's set but the ideographic variation selectors (Selectors
+// bounds those): LRM, RLM, ALM, the soft hyphen and the Mongolian vowel separator.
+func honestMark(r rune) bool {
+	return r == 0x200E || r == 0x200F || r == 0x061C || r == 0x00AD || r == 0x180E
+}
+
+// MaxHonestMarks is the most honest marks in place (HonestMarks) the texts of one source may hold
+// before each further one counts as a hidden unit (Selectors): an MCP server's instructions and tools
+// together, a repository's instruction files. One by one they are honest; in number they spell bits
+// where no one sees them: a soft hyphen at each hyphenation point of a word or none, a directional
+// mark at each line's end or none in English text with one Hebrew letter (ADR-0167 round 6: 20 bytes
+// as 85 soft hyphens, RLM or ALM, gave no flag and an allow). Eight, as for the ideographic variants
+// and the later emoji. The directional marks have more in right-to-left text (RTLLettersPerMark).
+// What the bound leaves is the choice of eight places: log2 C(N, 8) bits for N places, 139 bits
+// (about 17 bytes) for the 644,100 hyphenation points of 300 tools of 4 KiB of English, and log2 3
+// more a directional mark for the choice among LRM, RLM and ALM (round 7, R6-CAP-1).
+const MaxHonestMarks = 8
+
+// RTLLettersPerMark: the directional marks in place of a source have one more place past
+// MaxHonestMarks for each RTLLettersPerMark right-to-left letters of its texts (round 7, R6-FP-1).
+// Honest right-to-left text needs them: Apple's Hebrew and Arabic strings for macOS hold one in place
+// for 19 right-to-left letters and more at the first percentile, Flutter's Hebrew and Persian ones
+// nine in 2.4 KB; with twenty no 4 KiB part of them passes the bound. To hold 85 marks a text shows
+// some 1,700 right-to-left letters.
+const RTLLettersPerMark = 20
+
+// HonestMarks counts the honest marks of s (honestMark) that stand in place, as Unseen judges s (its
+// variation selectors aside), and its directional isolates in balanced pairs (Measure).
+func HonestMarks(s string) int {
+	c := Measure(s)
+	return c.Hyphens + c.Directional
 }
 
 // laterEmoji reports a code point Go's Unicode tables (17.0) leave unassigned in the blocks where
@@ -656,9 +870,37 @@ func StraySelectors(s string) (n, first int) {
 // Selectors judges the variation selectors of the texts of one source as one text: the ideographic
 // bound (MaxIdeographicSelectors) holds for the source, not for each of its texts, whose number the
 // source chooses (an MCP server lists up to 300 tools, a repository holds many rule files; A1-VS-1,
-// round 2). The zero value is a source with no text yet.
+// round 2). It bounds the honest marks in place of the source the same way (Judge, MaxHonestMarks,
+// RTLLettersPerMark; rounds 6 and 7). The zero value is a source with no text yet.
 type Selectors struct {
 	ideographic int // the ideographic variation selectors of the texts so far that stand where one may
+	hyphens     int // the soft hyphens and Mongolian vowel separators in place of the texts so far
+	directional int // the directional marks in place and isolate pairs of the texts so far
+	rtl         int // the right-to-left letters of the texts so far
+	emitted     int // the hidden units Judge has given for honest marks so far
+}
+
+// Judge counts the source's next text once (Measure): its Unseen count, and how many of its honest
+// marks in place stand past the source's bound, after those of the texts before it, each a hidden
+// unit. The bound is MaxHonestMarks for the soft hyphens and the directional marks together, with
+// one more place for the directional marks for each RTLLettersPerMark right-to-left letters of the
+// source. A unit once given is not taken back when a later text's right-to-left letters raise the
+// bound: marks never comes out below zero (round 7, R6-FP-1).
+func (c *Selectors) Judge(s string) (unseen, marks int) {
+	m := Measure(s)
+	c.hyphens += m.Hyphens
+	c.directional += m.Directional
+	c.rtl += m.RTL
+	over := max(0, c.hyphens+max(0, c.directional-c.rtl/RTLLettersPerMark)-MaxHonestMarks)
+	marks = max(0, over-c.emitted)
+	c.emitted += marks
+	return m.Unseen, marks
+}
+
+// Marks is Judge's second count.
+func (c *Selectors) Marks(s string) int {
+	_, n := c.Judge(s)
+	return n
 }
 
 // Stray is StraySelectors for the source's next text: its ideographic selectors count after those of
@@ -701,7 +943,7 @@ var rightToLeftScripts = []*unicode.RangeTable{
 	unicode.Sogdian, unicode.Syriac, unicode.Thaana, unicode.Yezidi,
 }
 
-func rightToLeft(r rune) bool { return unicode.In(r, rightToLeftScripts...) }
+func rightToLeft(r rune) bool { return r >= 0x0590 && unicode.In(r, rightToLeftScripts...) } // none below Hebrew (TestRightToLeftBelowHebrew)
 
 // Visible returns s with each invisible character, directional controls too, as a JSON escape: what
 // Text drops wherever it stands, the joiners and every variation selector, as \uXXXX (lowercase hex;

@@ -2,6 +2,7 @@ package installread
 
 import (
 	"bytes"
+	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
 	"strings"
 )
@@ -25,17 +26,49 @@ func decodeExact(b []byte, v any) error {
 	return jsonv2.Unmarshal(jsonc(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf"))), v)
 }
 
+// memberNames: the names of a JSON object's members in the text's order, read as decodeExact reads it; nil when the
+// text is no object it decodes. A reason a member gives follows that order, not a map's (READER-REASON-ORDER-1).
+func memberNames(b []byte) []string {
+	d := jsontext.NewDecoder(bytes.NewReader(jsonc(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")))))
+	if tok, err := d.ReadToken(); err != nil || tok.Kind() != '{' {
+		return nil
+	}
+	var names []string
+	for d.PeekKind() == '"' {
+		tok, err := d.ReadToken()
+		if err != nil {
+			return nil
+		}
+		names = append(names, tok.String()) // before the next call voids the token
+		if d.SkipValue() != nil {
+			return nil
+		}
+	}
+	return names
+}
+
 // launchLine joins a launch command and its arguments into a shell line for ParseInstallLine. A shell
 // payload (sh -c "npx -y x") must stay readable as a command, so arguments are joined as they are.
 func launchLine(command string, args []string) string {
 	return strings.TrimSpace(command + " " + strings.Join(args, " "))
 }
 
+// launchBase: a program word's name, without its folder and in lower case, and without the ending of a Windows shim or
+// launcher: .cmd, .exe, and .ps1 and .bat (npm's cmd-shim writes a .ps1 beside each .cmd, and PowerShell runs npx.ps1
+// when it is named; ADR-0159 round 43, P3-4).
 func launchBase(w string) string {
 	if i := strings.LastIndexAny(w, `/\`); i >= 0 {
 		w = w[i+1:]
 	}
-	return strings.TrimSuffix(strings.TrimSuffix(strings.ToLower(w), ".cmd"), ".exe")
+	return dropShim(strings.ToLower(w))
+}
+
+// dropShim: a lower-case program name without a Windows shim's ending (.cmd, .exe, .ps1, .bat).
+func dropShim(w string) string {
+	for _, s := range []string{".cmd", ".exe", ".ps1", ".bat"} {
+		w = strings.TrimSuffix(w, s)
+	}
+	return w
 }
 
 // stripVersion: "@scope/name@1.2.3" -> "@scope/name", "name@1" -> "name".
@@ -58,6 +91,22 @@ func shellQuote(w string) string {
 // unreadCode maps what ParseInstallLine could not read to a fixed reason code.
 func unreadCode(msg string) string {
 	switch {
+	case strings.HasPrefix(msg, whyRemoteScript): // PIPE-SCRIPT-1: a downloaded script whose address the line does not show
+		return "runs_remote_script"
+	case strings.HasPrefix(msg, whyOwnShell): // round 29: the allowlist of the line's own shell
+		return "line_shell_not_read"
+	case msg == whyUnseenWrite: // ECO-1 Go, round 4
+		return "unread_env_write"
+	case strings.HasPrefix(msg, whyScript): // first: the script it quotes may hold any of the words below (READER-SHELLS)
+		return "script_not_read"
+	case strings.HasPrefix(msg, whyShadow): // READER-SHADOW-1
+		return "shadowed_command"
+	case strings.HasPrefix(msg, whyOverride): // the second reader's wording; Homebrew's brew.env moved (ECO-1-BREW round 2)
+		return "environment_override"
+	case strings.HasPrefix(msg, whyVarCommand):
+		return "variable_argument"
+	case strings.HasPrefix(msg, whySubstCommand):
+		return "command_substitution"
 	case strings.Contains(msg, "custom registry"), strings.Contains(msg, "config file"):
 		return "custom_registry"
 	case strings.Contains(msg, "loads other code"):
