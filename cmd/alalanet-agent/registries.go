@@ -1266,8 +1266,11 @@ func (c *regCheck) pypiFiles(cwd string, ups []string, command string) {
 			c.site(filepath.Clean(e))
 		}
 	}
-	// A program the line runs by its path (.venv/bin/pip, /opt/py/bin/python -m pip): the prefix it is in.
-	for _, w := range commandWord.FindAllString(command, 64) {
+	// A program the line runs by its path (.venv/bin/pip, /opt/py/bin/python -m pip): the prefix it is in — every word
+	// of the line, at most maxPyNames*4 prefixes; past them the read is incomplete (round 4: the first 64 words were read
+	// and the rest dropped unread)
+	prefixes := map[string]bool{}
+	for _, w := range commandWord.FindAllString(command, -1) {
 		dir := filepath.Dir(w)
 		if b := filepath.Base(dir); (b == "bin" || b == "Scripts") && strings.ContainsAny(w, `/\`) {
 			if !filepath.IsAbs(dir) {
@@ -1276,14 +1279,25 @@ func (c *regCheck) pypiFiles(cwd string, ups []string, command string) {
 				}
 				dir = filepath.Join(cwd, dir)
 			}
-			c.site(filepath.Dir(dir))
+			if p := filepath.Dir(dir); !prefixes[p] {
+				if len(prefixes) >= maxPyNames*4 {
+					c.moved("the line", "runs programs from more folders than this reader reads, so the pip configuration of the rest is not known")
+					break
+				}
+				prefixes[p] = true
+				c.site(p)
+			}
 		}
 	}
 	if c.pf.lookPath != nil {
-		for _, n := range []string{"pip", "pip3", "python", "python3"} {
+		names, over := pyNames(command)
+		for _, n := range names {
 			for _, p := range c.prefixesOf(n) {
 				c.site(p)
 			}
+		}
+		if over {
+			c.moved("the line", "names more Python launchers than this reader looks up, so the pip configuration of the rest is not known")
 		}
 	}
 	var pips, uvs []string
@@ -1331,3 +1345,39 @@ func (c *regCheck) pypiFiles(cwd string, ups []string, command string) {
 	}
 	c.followLinks = false
 }
+
+// pyNames: the programs whose install prefix holds pip's configuration for a line — pip's and Python's default names,
+// and each Python launcher or pip the line runs by its bare name (python3.12 -m pip, pip3.12, py; PIP-VERSIONED-1
+// round 3), at most maxPyNames. The launchers that run pip (pip3.12, python3.12 -m pip) come before the others, and over
+// is true when the line names more than the reader looks up (round 4, re-review P3: the rest was dropped unread).
+func pyNames(command string) (names []string, over bool) {
+	names = []string{"pip", "pip3", "python", "python3"}
+	var runsPip, others []string
+	for _, cm := range installread.Commands(command) {
+		if !installread.PythonLauncher(cm.Prog) || slices.Contains(runsPip, cm.Prog) || len(cm.Words) > 0 && strings.ContainsAny(cm.Words[0], `/\`) {
+			continue // a program run by its path is read by its prefix above
+		}
+		kind, mod, _ := installread.PythonRun(cm.Prog, cm.Words[min(1, len(cm.Words)):])
+		if !installread.PythonInterp(cm.Prog) || kind == installread.PyModule && mod == "pip" {
+			runsPip = append(runsPip, cm.Prog)
+		}
+	}
+	for _, w := range commandWord.FindAllString(command, -1) {
+		if n := installread.LaunchBase(w); !strings.ContainsAny(w, `/\`) && installread.PythonLauncher(n) && !slices.Contains(others, n) {
+			others = append(others, n)
+		}
+	}
+	for _, n := range append(runsPip, others...) {
+		switch {
+		case slices.Contains(names, n):
+		case len(names) >= maxPyNames:
+			over = true
+		default:
+			names = append(names, n)
+		}
+	}
+	return names, over
+}
+
+// maxPyNames: how many program names pyNames gives for one line (each is looked up on PATH)
+const maxPyNames = 16

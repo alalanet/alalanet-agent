@@ -3,7 +3,6 @@ package installread
 import (
 	"strings"
 	"testing"
-	"time"
 )
 
 // Independent review of READER-SHELLS (5248631, ADR-0159 round 5). Each line runs `npm i zz-review-pkg` or
@@ -86,29 +85,20 @@ func TestReaderShellsReviewParamDefaults(t *testing.T) {
 // P2-4. The second reader's command_substitution rule substitutes every printed text into every command named by a
 // mark and reads it again: K commands against one long printed text cost K times its length. 7b53831 read this
 // line in about the production reader's time; 5248631 took 23 s for 108 KB without -race (2.4 s at 50 KB / 200).
-// The bound is TestExtraBounded's (costWithin): production's time plus 250 ms.
+// The bound is readersBound times production's cost (readersRatio).
 func TestReaderShellsReviewSubstitutedNamesBounded(t *testing.T) {
 	for name, line := range map[string]string{
 		"a script printed once, many named commands": "$(echo sh -c '" + strings.Repeat("a;", 25_000) + "'); " + strings.Repeat("$(:) x; ", 200),
 		"many words printed once, many commands":     "$(echo " + strings.Repeat("a ", 25_000) + "); " + strings.Repeat("$(:) x; ", 200),
 		"one name of many marks":                     "$(echo " + strings.Repeat("a", 50_000) + "); " + strings.Repeat("$(:)", 1000) + " x",
 	} {
-		// The best of three attempts against the first reader's time plus a second: a loaded -race VM varies by
-		// hundreds of milliseconds (round 9, R4-6), while the P2-4 regression took 2.5 s here without -race and 23 s at
-		// 108 KB, so it still fails clearly.
-		var de, dp time.Duration
-		for try := 0; try < 3; try++ {
-			start := time.Now()
-			tg, un, _, s := ParseLine(line)
-			p := time.Since(start)
-			start = time.Now()
-			HookExtra(line, tg, un, s)
-			if e := time.Since(start); try == 0 || e-p < de-dp {
-				de, dp = e, p
-			}
-		}
-		if limit := dp + time.Second; de > limit {
-			t.Errorf("%s (%d bytes): the second reader took %v, production %v, the bound is %v", name, len(line), de, dp, limit)
+		// readersRatio against readersBound (COST-WALLCLOCK-1): it was the best of three attempts against the first
+		// reader's time plus a second of the host's, which a loaded host failed (round 9, R4-6); the P2-4 regression took
+		// 2.5 s here without -race and 23 s at 108 KB, a ratio far past the bound, so it still fails clearly.
+		ratio, de, dp := readersRatio(line)
+		t.Logf("%s (%d bytes): the second reader %v, production %v (x%.2f)", name, len(line), de, dp, ratio)
+		if ratio > readersBound {
+			t.Errorf("%s (%d bytes): the second reader took %v, production %v: x%.1f, the bound is x%d", name, len(line), de, dp, ratio, readersBound)
 		}
 	}
 }

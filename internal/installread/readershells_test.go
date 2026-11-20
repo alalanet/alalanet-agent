@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/alalanet/alalanet-agent/internal/costtest"
 )
 
 // READER-SHELLS (ADR-0159, round 5): commands that run other commands the way a shell does. Each line below runs
@@ -244,9 +246,9 @@ func TestReaderShellsSecondReaderReadsTheScripts(t *testing.T) {
 	}
 }
 
-// The command_substitution rule is bounded: the second reader takes no longer than the first on a crafted line that
-// names many commands by a mark against a long printed text (the cap bounds one reading; the work budget, the number
-// of them). A relative bound, so it holds under -race (P2-4). TestReaderShellsReviewSubstitutedNamesBounded pins the
+// The command_substitution rule is bounded: the second reader costs at most readersBound times the first on a crafted
+// line that names many commands by a mark against a long printed text (the cap bounds one reading; the work budget,
+// the number of them). A relative bound, so it holds under -race and under load (P2-4; COST-WALLCLOCK-1). TestReaderShellsReviewSubstitutedNamesBounded pins the
 // absolute shapes.
 func TestReaderShellsSubstBounded(t *testing.T) {
 	for _, line := range []string{
@@ -254,42 +256,40 @@ func TestReaderShellsSubstBounded(t *testing.T) {
 		"$(echo " + strings.Repeat("a", 40_000) + "); " + strings.Repeat("$(:) x; ", 2_000),                      // many marks re-reading the printed text
 		strings.Repeat("$(echo sh -c '"+strings.Repeat("a;", 500)+"'); ", 100) + strings.Repeat("$(:) x; ", 500), // many texts × many marks: the budget bounds it (R4-1)
 	} {
-		if de, dp := readersBestOf3(line); de > dp+time.Second {
-			t.Errorf("%d bytes: the second reader took %v, the first %v, the bound is %v", len(line), de, dp, dp+time.Second)
+		ratio, de, dp := readersRatio(line)
+		t.Logf("%d bytes: the second reader %v, the first %v (x%.2f)", len(line), de, dp, ratio)
+		if ratio > readersBound {
+			t.Errorf("%d bytes: the second reader took %v, the first %v: x%.1f, the bound is x%d", len(line), de, dp, ratio, readersBound)
 		}
 	}
 }
 
-// readersBestOf3: the second reader's and the first reader's times on a line, from the attempt (of three) where the
-// second reader's lead over the first was smallest: one wall-clock sample on a loaded -race VM varies by hundreds of
-// milliseconds (R4-6, R5-1).
-func readersBestOf3(line string) (de, dp time.Duration) {
-	for try := 0; try < 3; try++ {
-		start := time.Now()
-		tg, un, _, s := ParseLine(line)
-		p := time.Since(start)
-		start = time.Now()
-		HookExtra(line, tg, un, s)
-		if e := time.Since(start); try == 0 || e-p < de-dp {
-			de, dp = e, p
-		}
-	}
-	return de, dp
+// readersRatio: the second reader's cost on a line against the first reader's on it, measured interleaved as the least
+// of five rounds (costtest.Against, COST-WALLCLOCK-1): a ratio in the host's own units, so that a loaded host slows both
+// sides, where the bound was the first reader's time plus a second of the host's (make ci at load ~30 failed it, R4-6,
+// R5-1). The second reader is measured on the first reader's own results, as the hook gives them.
+func readersRatio(line string) (ratio float64, de, dp time.Duration) {
+	tg, un, _, s := ParseLine(line)
+	return costtest.Against(5, func() { HookExtra(line, tg, un, s) }, func() { ParseLine(line) })
 }
+
+// readersBound: the second reader costs at most this many times the first on the crafted lines below. Measured
+// (COST-WALLCLOCK-1): at most x2.46 on an idle host and x4.20 under load; the P2-4 regression took 2.5 s against the
+// first reader's tens of milliseconds, a ratio past 50 (replayed on 5248631: x19-134). A milder regression (+46 ms,
+// x5) passes it, as it passed develop's "first reader plus 1 s".
+const readersBound = 10
 
 // A printed text that is itself a script of many short commands costs a reading per command, and the work budget is
-// charged so (R5-1): k such texts and 500 commands named by a mark stay within the production reader's time plus
-// 250 ms (TestExtraBounded's rule; four times the slack under the race detector). Before, a 29 KB line took about
-// half a second: the budget allowed ~1,000 readings of ~500 commands each.
+// charged so (R5-1): k such texts and 500 commands named by a mark stay within readersBound times the first reader's
+// cost (it was the first reader's time plus 250 ms of the host's, four times that under the race detector). Before, a
+// 29 KB line took about half a second: the budget allowed ~1,000 readings of ~500 commands each.
 func TestReaderShellsPrintedScriptsBounded(t *testing.T) {
-	slack := 250 * time.Millisecond
-	if raceDetector {
-		slack *= 4
-	}
 	for _, k := range []int{25, 100} {
 		line := strings.Repeat("$(echo sh -c '"+strings.Repeat("a;", 500)+"'); ", k) + strings.Repeat("$(:) x; ", 500)
-		if de, dp := readersBestOf3(line); de > dp+slack {
-			t.Errorf("%d texts (%d bytes): the second reader took %v, the first %v, the bound is %v", k, len(line), de, dp, dp+slack)
+		ratio, de, dp := readersRatio(line)
+		t.Logf("%d texts (%d bytes): the second reader %v, the first %v (x%.2f)", k, len(line), de, dp, ratio)
+		if ratio > readersBound {
+			t.Errorf("%d texts (%d bytes): the second reader took %v, the first %v: x%.1f, the bound is x%d", k, len(line), de, dp, ratio, readersBound)
 		}
 	}
 }

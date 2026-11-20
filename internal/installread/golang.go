@@ -1002,7 +1002,7 @@ func goWriteDests(words []string) []goWrite {
 			}
 		}
 		return out
-	case strings.HasPrefix(cmd, "python") || cmd == "py":
+	case pythonInterp(cmd):
 		return script("-c")
 	case cmd == "node" || cmd == "nodejs" || cmd == "deno" || cmd == "bun":
 		return script("-e", "--eval", "-p", "--print", "eval")

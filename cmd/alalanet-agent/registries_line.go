@@ -557,8 +557,11 @@ func (c *regCheck) toolVersions(path string) {
 // pmNames: the programs an alias or a function must not stand in for (round 9, R5); pn and pnx are pnpm's and pnpx's
 // own bins in pnpm 11 and 12 (ADR-0159 round 41).
 var pmNames = map[string]bool{"npm": true, "npx": true, "pnpm": true, "pnpx": true, "pn": true, "pnx": true, "yarn": true, "bun": true,
-	"bunx": true, "corepack": true, "pip": true, "pip3": true, "python": true, "python3": true, "uv": true,
-	"uvx": true, "pipx": true, "deno": true}
+	"bunx": true, "corepack": true, "uv": true, "uvx": true, "pipx": true, "deno": true}
+
+// pmName: one of pmNames, or a Python launcher or pip by the reader's pattern (python3.12, py, pyw, pypy3, pip3.12;
+// PIP-VERSIONED-1 round 3).
+func pmName(n string) bool { return pmNames[n] || installread.PythonLauncher(n) }
 
 // helperNames: the programs whose output this reader trusts in a startup file or a template (cygpath for VIRTUAL_ENV;
 // dirname, realpath, basename, uname and command in the activate templates): any alias or function of one of these
@@ -575,13 +578,13 @@ var tlsVars = map[string]bool{"HTTPS_PROXY": true, "HTTP_PROXY": true, "ALL_PROX
 func pmShadow(line string) string {
 	if zshArray.MatchString(line) {
 		for _, w := range shellWord.FindAllString(line, -1) {
-			if pmNames[w] || helperNames[w] {
+			if pmName(w) || helperNames[w] {
 				return w
 			}
 		}
 	}
 	if m := funcDef.FindStringSubmatch(line); m != nil {
-		if n := m[1] + m[2]; pmNames[n] || helperNames[n] {
+		if n := m[1] + m[2]; pmName(n) || helperNames[n] {
 			return n
 		}
 	}
@@ -597,7 +600,7 @@ func pmShadow(line string) string {
 		pairs = fishAlias.FindAllStringSubmatch(m[1], 1)
 	}
 	for _, p := range pairs {
-		if helperNames[p[1]] || pmNames[p[1]] && !plainProgram.MatchString(unquote(p[2])) {
+		if helperNames[p[1]] || pmName(p[1]) && !plainProgram.MatchString(unquote(p[2])) {
 			return p[1]
 		}
 	}

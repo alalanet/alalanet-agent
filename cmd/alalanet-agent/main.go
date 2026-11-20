@@ -83,8 +83,11 @@ func api() string {
 	if v := os.Getenv("ALALANET_API"); v != "" {
 		return v
 	}
-	return "https://alalanet.com"
+	return defaultAPI
 }
+
+// defaultAPI is alalanet's own address, the one ALALANET_API overrides.
+const defaultAPI = "https://alalanet.com"
 
 func run(args []string) error {
 	if len(args) == 0 {
@@ -137,7 +140,8 @@ func run(args []string) error {
 		home, _ := os.UserHomeDir()
 		return runHookMain(ctx, args[1], os.Stdin, os.Stdout, hookCall{client: hookClient(), api: api(), token: token, tokenBad: bad,
 			stderr: os.Stderr, failClosed: failClosed(os.Getenv("ALALANET_FAIL_CLOSED")), mcp: newVerifier(os.Getenv, home), home: home,
-			claudeConfig: mcpverify.ClaudeConfigFile(os.Getenv, home), policy: defaultPolicyFiles(), getenv: os.Getenv})
+			claudeConfig: mcpverify.ClaudeConfigFile(os.Getenv, home), policy: defaultPolicyFiles(), getenv: os.Getenv,
+			device: newDeviceKeySource(os.Getenv, hookClient(), api())})
 	case "mcp-verify":
 		if len(args) > 2 || len(args) == 2 && args[1] != "--project" {
 			return errors.New("usage: mcp-verify [--project] (--project: also the servers of this folder's .mcp.json and .cursor/mcp.json that Claude Code has not approved)")

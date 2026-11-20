@@ -146,8 +146,9 @@ func winExePath(raw string) bool {
 // respelled argument (ds\py, --\python), an option (--use-\npm) or an assignment (PYTHON=\python3) is no path. A
 // respelling of a program name makes one only from a name that ends in another (p\npm: pnpm, whose reading is npm's).
 func winProgramPath(raw string) bool {
+	b := launchBase(raw)
 	return strings.Contains(raw, `\`) && !strings.ContainsAny(raw, "/=") && raw[0] != '\\' && raw[0] != '-' &&
-		winPrograms[launchBase(raw)]
+		(winPrograms[b] || PythonLauncher(b)) // any Python launcher or pip by the pattern (PIP-VERSIONED-1 round 4)
 }
 
 // programSlot: the next word is where a command's program stands — the first word, or the first after wrappers and
@@ -170,9 +171,10 @@ func programSlot(words []string) bool {
 // winWrappers: the words cmd and PowerShell run a program through.
 var winWrappers = map[string]bool{"cmd": true, "cmd.exe": true, "start": true, "call": true, "start-process": true, "saps": true}
 
-// winPrograms: the programs a Windows path to which is read a second time without a suffix (winProgramPath).
+// winPrograms: the programs a Windows path to which is read a second time without a suffix (winProgramPath), beside
+// every Python launcher and pip, which PythonLauncher takes by the pattern (python3.12, pypy3, pyw, pip3.12).
 var winPrograms = map[string]bool{"npm": true, "npx": true, "pnpm": true, "pnpx": true, "yarn": true, "bun": true, "bunx": true,
-	"pip": true, "pip3": true, "uv": true, "uvx": true, "pipx": true, "python": true, "python3": true, "py": true, "deno": true}
+	"uv": true, "uvx": true, "pipx": true, "deno": true}
 
 // rawSpelling: the word with the dropped backslashes (at bs) put back — the Windows spelling, whether or not it is a
 // path. "" when nothing was dropped.
@@ -707,7 +709,8 @@ func installsOnly(script string) bool {
 		return false
 	}
 	only := func(c Command) bool {
-		py := (strings.HasPrefix(c.Prog, "python") || c.Prog == "py") && len(c.Words) > 2 && c.Words[1] == "-m" && packageManagers[c.Words[2]]
+		mod, _, isMod := pyModule(c.Prog, c.Words[1:])
+		py := pythonInterp(c.Prog) && len(c.Words) > 1 && isMod && packageManagers[mod]
 		return len(c.Assigns) == 0 && (packageManagers[c.Prog] || py || passOn[c.Prog] || judgedSet(c))
 	}
 	for i, c := range cs {
@@ -1768,10 +1771,10 @@ body:
 			}
 		}
 		return
-	case strings.HasPrefix(cmd, "python") || cmd == "py":
-		if len(rest) >= 2 && rest[0] == "-m" && (rest[1] == "pip" || rest[1] == "pip3" || rest[1] == "uv" || rest[1] == "pipx") {
-			p.command(append([]string{rest[1]}, rest[2:]...), depth+1)
-		} else if len(rest) >= 2 && rest[0] == "-m" && rest[1] == "venv" {
+	case pythonInterp(cmd):
+		if mod, margs, ok := pyModule(cmd, rest); ok && (mod == "pip" || mod == "pip3" || mod == "uv" || mod == "pipx") {
+			p.command(append([]string{mod}, margs...), depth+1)
+		} else if ok && mod == "venv" {
 			p.hits++ // python3 -m venv .venv: the standard library, nothing installed
 		}
 		return

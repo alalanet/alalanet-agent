@@ -339,7 +339,7 @@ func (p *hookParse) ranSubst(words []string) {
 
 // interpInline: the program text python -c, node -e (--eval, -p) or perl -e gives on the line, or "".
 func interpInline(cmd string, rest []string) string {
-	if !interpreterName.MatchString(cmd) || cmd == "pwsh" || cmd == "powershell" {
+	if !interpreterName(cmd) || cmd == "pwsh" || cmd == "powershell" {
 		return ""
 	}
 	for i := 0; i < len(rest); i++ {
@@ -673,8 +673,11 @@ func psWebURLs(rest []string) ([]string, bool) {
 // download and the shell stops the reading: what reaches the shell is that command's output.
 var scriptFilters = wordSet("tee cat gunzip zcat gzip xz unxz xzcat bzip2 bunzip2 bzcat zstd unzstd zstdcat base64 tr sed dos2unix iconv")
 
-// interpreter: python, node and perl (and their versioned names), PowerShell; "" for any other program.
-var interpreterName = regexp.MustCompile(`^(?:python[0-9.]*|py|pypy[0-9.]*|node|nodejs|perl[0-9.]*|pwsh|powershell)$`)
+// interpreter: python (any Python launcher by its pattern, pythonInterp: PIP-VERSIONED-1 round 2), node and perl (and
+// their versioned names), PowerShell.
+var otherInterpreter = regexp.MustCompile(`^(?:node|nodejs|perl[0-9.]*|pwsh|powershell)$`)
+
+func interpreterName(cmd string) bool { return pythonInterp(cmd) || otherInterpreter.MatchString(cmd) }
 
 // Where an interpreter reads the program it runs.
 const (
@@ -686,7 +689,7 @@ const (
 
 // interpSource: where python, node, perl or PowerShell read the program they run.
 func interpSource(cmd string, rest []string) int {
-	if !interpreterName.MatchString(cmd) {
+	if !interpreterName(cmd) {
 		return srcNone
 	}
 	for i := 0; i < len(rest); i++ {

@@ -384,7 +384,7 @@ func runFiles(words []string) (out []string, fed bool) {
 		return out, false
 	case cmd == "pwsh" || cmd == "powershell": // -File F: its first word that is no option (-File is one)
 		script = firstArg(pwshFileValued)
-	case interpreterName.MatchString(cmd):
+	case interpreterName(cmd):
 		script = firstArg(interpValued)
 	case strings.HasPrefix(cmd, "$"): // $SHELL i.sh: a program alalanet cannot name, read as a shell (round 4)
 		script = firstArg(shellValued)

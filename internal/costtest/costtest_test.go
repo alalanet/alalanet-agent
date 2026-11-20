@@ -1,6 +1,8 @@
 package costtest
 
 import (
+	"math"
+	"runtime"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -94,5 +96,81 @@ func TestBestOutlastsAStalledSide(t *testing.T) {
 	d, cpu := Best(5, develop, exact)
 	if cpu || d[1] > bound(d[0]) {
 		t.Fatalf("interleaved, the least wall time: %v against %v, bound %v (cpu %v)", d[1], d[0], bound(d[0]), cpu)
+	}
+}
+
+var linearSink int
+
+// Linear tells a quadratic cost from a linear one by Bound (COST-WALLCLOCK-1): a loop over n gives a ratio near 1, a loop
+// over n squared gives Scale. Against gives the ratio to a reference on the same input: Scan against itself, near 1.
+func TestLinearTellsQuadraticFromLinear(t *testing.T) {
+	work := func(n int) {
+		s := 0
+		for i := 0; i < n; i++ {
+			s += i ^ (s >> 3)
+		}
+		linearSink += s
+	}
+	n := 1 << 22
+	lin, db, ds := Linear(3, Scale, func() { work(n) }, func() { work(n / Scale) })
+	if lin > Bound {
+		t.Errorf("a linear loop: %v against %v (x%.1f), over the bound x%d", db, ds, lin, Bound)
+	}
+	q := 1 << 12
+	quad, db, ds := Linear(3, Scale, func() { work(q * q) }, func() { work(q * q / Scale / Scale) })
+	if quad <= Bound {
+		t.Errorf("a quadratic loop: %v against %v (x%.1f), within the bound x%d", db, ds, quad, Bound)
+	}
+	s := string(make([]byte, 1<<20))
+	if r, a, b := Against(3, func() { Scan(s) }, func() { Scan(s) }); r > 2 || r < 0.5 {
+		t.Errorf("Scan against itself: %v and %v (x%.2f)", a, b, r)
+	}
+	t.Logf("linear x%.2f, quadratic x%.1f", lin, quad)
+}
+
+// Matched gives the ratio to one run of a much shorter reference, the sides measured at about the same length.
+func TestMatchedRatioToAShortReference(t *testing.T) {
+	work := func(n int) {
+		s := 0
+		for i := 0; i < n; i++ {
+			s += i ^ (s >> 3)
+		}
+		linearSink += s
+	}
+	r, df, dref := Matched(3, func() { work(1 << 24) }, func() { work(1 << 14) })
+	if r < 500 || r > 2000 { // 1024 by the work
+		t.Errorf("ratio x%.0f (%v against %v a run), want about 1024", r, df, dref)
+	}
+}
+
+var allocSink []byte
+
+// A reading that allocates quadratically fails Linear's bound instead of taking the machine's memory (re-review P2-1):
+// with MemoryLimit lowered to 256 MiB, a big run that allocates about 2 GiB of garbage keeps the heap near the limit,
+// and the ratio still says quadratic.
+func TestBestBoundsAQuadraticAllocation(t *testing.T) {
+	defer func(l int64) { MemoryLimit = l }(MemoryLimit)
+	MemoryLimit = 256 << 20
+	alloc := func(n int) { // n(n-1)/2 * 64 bytes
+		for i := 0; i < n; i++ {
+			allocSink = make([]byte, i*64)
+		}
+	}
+	n := 8192 // about 2 GiB at the big size
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	ratio, db, ds := Linear(1, Scale, func() { alloc(n) }, func() { alloc(n / Scale) })
+	runtime.ReadMemStats(&after)
+	grew := int64(after.HeapSys) - int64(before.HeapSys)
+	t.Logf("quadratic allocation: %v against %v (x%.1f); the heap grew %d MiB", db, ds, ratio, grew>>20)
+	if ratio <= Bound {
+		t.Errorf("a quadratic allocation: x%.1f, within the bound x%d", ratio, Bound)
+	}
+	if grew > 1<<30 {
+		t.Errorf("the heap grew %d MiB for a limit of %d MiB: the collector did not run at the limit", grew>>20, MemoryLimit>>20)
+	}
+	if p := debug.SetMemoryLimit(-1); p != math.MaxInt64 {
+		t.Errorf("the memory limit left at %d after Best", p)
 	}
 }

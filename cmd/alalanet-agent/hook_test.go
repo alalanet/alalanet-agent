@@ -37,7 +37,7 @@ type fakeHook struct {
 }
 
 // hookHeaders: the headers a hook request may carry.
-var hookHeaders = map[string]bool{"Accept-Encoding": true, "Content-Length": true, "Content-Type": true, "User-Agent": true, "Authorization": true}
+var hookHeaders = map[string]bool{"Accept-Encoding": true, "Content-Length": true, "Content-Type": true, "User-Agent": true, "Authorization": true, "X-Alalanet-Device-Key": true}
 
 func (f *fakeHook) server(t *testing.T) *httptest.Server {
 	t.Helper()

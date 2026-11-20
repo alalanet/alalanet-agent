@@ -10,7 +10,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -229,9 +228,15 @@ func zzWorst(size int) map[string]string {
 	}
 }
 
+// sec9PerPass bounds the counts on a text against one pass over its bytes (TestZZReviewSEC9AgentCountCost): the
+// 30 s for 4 MiB it was, in passes of an idle host (one pass over 4 MiB takes about 4 ms there; the shapes measured
+// 4-27 passes on 2026-11-19).
+const sec9PerPass = 7500
+
 // The cost: ns per byte and allocations for each worst text at 64 KiB (the largest gift wrap the
 // server keeps holds less) and the slowest at 4 MiB (all agentkit reads of one response). Logged, and
-// failed only past one second for 64 KiB or 30 s for 4 MiB, far beyond any finding; the Mac is shared.
+// failed past sec9PerPass times one pass over the text's bytes (costtest.Against, costtest.Scan; COST-WALLCLOCK-1:
+// it was one second for 64 KiB and 30 s for 4 MiB of the host's time, far beyond any finding; the Mac is shared).
 func TestZZReviewSEC9AgentCountCost(t *testing.T) {
 	if testing.Short() {
 		t.Skip("cost")
@@ -240,11 +245,11 @@ func TestZZReviewSEC9AgentCountCost(t *testing.T) {
 	worstName, worstNs := "", 0.0
 	for name, s := range zzWorst(64 << 10) {
 		var n int
-		d := costtest.One(costtest.Rounds, func() { // the least of three, thread CPU (COST-TEST-LOAD-1)
+		per, d, pass := costtest.Against(costtest.Rounds, func() { // the least of three, thread CPU (COST-TEST-LOAD-1)
 			_, n = TextCount(s)
 			_ = Hidden(s)
 			_ = IdeographicSelectors(s)
-		})
+		}, func() { costtest.Scan(s) })
 		allocs := testing.AllocsPerRun(3, func() { TextCount(s) })
 		res := testing.Benchmark(func(b *testing.B) {
 			b.ReportAllocs()
@@ -256,18 +261,18 @@ func TestZZReviewSEC9AgentCountCost(t *testing.T) {
 		if nsb > worstNs {
 			worstName, worstNs = name, nsb
 		}
-		lines = append(lines, fmt.Sprintf("%-32s %6d B  removed %6d  TextCount %8.1f us (%5.1f ns/B, %d B/op, %.0f allocs)  with Hidden+IVS %v (least of 3)",
-			name, len(s), n, float64(res.NsPerOp())/1e3, nsb, res.AllocedBytesPerOp(), allocs, d))
-		if d > time.Second {
-			t.Errorf("%s: %v for 64 KiB", name, d)
+		lines = append(lines, fmt.Sprintf("%-32s %6d B  removed %6d  TextCount %8.1f us (%5.1f ns/B, %d B/op, %.0f allocs)  with Hidden+IVS %v (least of 3, %.0f passes)",
+			name, len(s), n, float64(res.NsPerOp())/1e3, nsb, res.AllocedBytesPerOp(), allocs, d, per))
+		if per > sec9PerPass {
+			t.Errorf("%s: %v for 64 KiB, %.0f times one pass over its bytes (%v; the bound is %d)", name, d, per, pass, sec9PerPass)
 		}
 	}
 	big := zzWorst(4 << 20)[worstName]
 	var n int
-	d := costtest.One(costtest.Rounds, func() { _, n = TextCount(big) }) // the least of three, thread CPU (COST-TEST-LOAD-1)
-	lines = append(lines, fmt.Sprintf("4 MiB of the slowest (%s): TextCount %v, removed %d", worstName, d, n))
-	if d > 30*time.Second {
-		t.Errorf("4 MiB: %v", d)
+	per, d, pass := costtest.Against(costtest.Rounds, func() { _, n = TextCount(big) }, func() { costtest.Scan(big) }) // thread CPU (COST-TEST-LOAD-1)
+	lines = append(lines, fmt.Sprintf("4 MiB of the slowest (%s): TextCount %v, removed %d, %.0f passes", worstName, d, n, per))
+	if per > sec9PerPass {
+		t.Errorf("4 MiB: %v, %.0f times one pass over its bytes (%v; the bound is %d)", d, per, pass, sec9PerPass)
 	}
 	for _, l := range lines {
 		t.Log(l)

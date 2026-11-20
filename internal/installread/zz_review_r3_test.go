@@ -4,7 +4,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/alalanet/alalanet-agent/internal/costtest"
 )
 
 // Re-review of PIPE-SCRIPT-1 round 3 (fe8834fd): proofs. Each line downloads a script and runs it (a bash oracle ran
@@ -40,23 +41,24 @@ func TestReviewR3SilentRuns(t *testing.T) {
 	}
 }
 
-// P2-2: an absolute (or first relative) cd's folder is joined onto every later relative word: quadratic. 64 KiB
-// against 256 KiB must grow about 4x, not 16x (head: 354 ms -> 4.6 s; develop 19 -> 72 ms).
+// P2-2: an absolute (or first relative) cd's folder is joined onto every later relative word: quadratic (head: 354 ms
+// at 64 KiB, 4.6 s at 256 KiB; develop 19 -> 72 ms). Just under MaxLineBytes (a longer line is refused unread) against
+// a 64th of it read 64 times (costtest.Linear, COST-WALLCLOCK-1; it was 64 KiB against 256 KiB, at most 8 times plus
+// 50 ms of the host's time).
 func TestReviewR3LongFolderCost(t *testing.T) {
+	big := MaxLineBytes - 1024
+	if raceDetector {
+		big = 64 << 10
+	}
+	line := func(first string, n int) string {
+		return first + strings.Repeat("a", n/2) + strings.Repeat("; x", n/2/3)
+	}
 	for _, first := range []string{"cd /", "cd "} {
-		var d [2]time.Duration
-		for k, n := range []int{64 << 10, 256 << 10} {
-			line := first + strings.Repeat("a", n/2) + strings.Repeat("; x", n/2/3)
-			best := time.Hour
-			for r := 0; r < 3; r++ {
-				t0 := time.Now()
-				ParseLine(line)
-				best = min(best, time.Since(t0))
-			}
-			d[k] = best
-		}
-		if d[1] > 8*d[0]+50*time.Millisecond {
-			t.Errorf("%q + a long folder: %v at 64 KiB, %v at 256 KiB (quadratic)", first, d[0], d[1])
+		b, s := line(first, big), line(first, big/costtest.Scale)
+		ratio, db, ds := costtest.Linear(3, costtest.Scale, func() { ParseLine(b) }, func() { ParseLine(s) })
+		t.Logf("%q + a long folder: %d KiB %v, %d B x%d %v (x%.2f)", first, len(b)>>10, db, len(s), costtest.Scale, ds, ratio)
+		if ratio > costtest.Bound {
+			t.Errorf("%q + a long folder: %v at %d KiB, %v for %d B read %d times: x%.1f (quadratic)", first, db, len(b)>>10, ds, len(s), costtest.Scale, ratio)
 		}
 	}
 }

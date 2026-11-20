@@ -147,17 +147,24 @@ itself needs no hook there: the alalanet plugin checks installs.
 
 **What leaves the machine.** Only the command line, and only when it installs or runs a package. It goes as
 `{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"…"}}` to
-`https://alalanet.com/v1/hooks/claude-code`, with `User-Agent: alalanet-agent/<version> (hook <runtime>)`. Your
-working directory, file paths, session and conversation ids, transcript, model, e-mail and prompts are never sent.
+`https://alalanet.com/v1/hooks/claude-code`, with `User-Agent: alalanet-agent/<version> (hook <runtime>)` and, without a
+plan token, the hook's free device key (`X-Alalanet-Device-Key`, below; asked for once by an empty
+`POST https://alalanet.com/v1/device-keys`). Your working directory, file paths, session and conversation ids, transcript, model, e-mail and prompts are never sent.
 A command held only for its shell syntax (a zsh glob group on a word), with no package in it to check, is held on
 your machine with alalanet's own words and not sent. Other commands are not sent at all. alalanet does not store the
 command line.
 
 **Environment.**
 - `ALALANET_TOKEN`, or `ALALANET_TOKEN_FILE` naming a file that holds it (for device management): a plan token, sent
-  as `Authorization: Bearer` and never printed. With it, the hook's daily limit is your plan's; without it, 1,000
-  checks a day per client address. A token that cannot be used (an unreadable file, a bad character, plain http to
-  another machine) holds installs and says why.
+  as `Authorization: Bearer` and never printed. With it, the hook's checks are your plan's one daily allowance, shared
+  with every other route. A token that cannot be used (an unreadable file, a bad character, plain http to another
+  machine) holds installs and says why.
+- `ALALANET_DEVICE_KEY` (from 1.6.1): the hook's free device key, sent as `X-Alalanet-Device-Key` when no token is set. With it the
+  hook has 1,000 checks a day (and the address no more than that, however many keys it holds); without one it shares
+  the address's 100 checks a day with every other route. When the variable is not set, the hook reads the key from
+  `alalanet/device-key` in your user configuration folder, and if there is none asks alalanet for one once
+  (`POST /v1/device-keys`, no sign-up; the key is bound to nothing), saves it there readable by you only, and uses it; a
+  refused request is not asked again for a day.
 - `ALALANET_FAIL_CLOSED=1`: when alalanet cannot be reached or the daily limit is spent, hold the install. By default
   it goes ahead unchecked, with one line on stderr, as Claude Code does when its HTTP hook cannot be reached.
   Recommended for CI and sensitive organisations; keep `ALALANET_API` on https.

@@ -1,17 +1,18 @@
 package installread
 
 import (
-	"runtime"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/alalanet/alalanet-agent/internal/costtest"
 )
 
 // READER-ESCAPE-1: the unquoting (a backslash dropped before any character, the Windows path put back, the shell's
-// words for install_check) stays linear. Each shape is read by both readers, as the hook reads a line, at a quarter
-// of the size and at the full size (just under MaxLineBytes, the hook's cap; a sixteenth of that under the race detector), and the full
-// size may cost at most twice the quarter size's ratio of 4, plus 50 ms for a busy host. The least of five interleaved
-// rounds is taken.
+// words for install_check) stays linear. Each shape is read by both readers, as the hook reads a line, at the full
+// size (just under MaxLineBytes, the hook's cap; a sixteenth of that under the race detector) against the same shape at
+// a 64th of it read 64 times (costtest.Linear, COST-WALLCLOCK-1): at most costtest.Bound times, which a linear reading
+// stays under however loaded the host is (both sides slowed alike) and a quadratic one passes 64-fold. It was a quarter
+// of the size read once against twice the size ratio plus 50 ms, which make ci at load ~30 failed.
 func TestReaderEscapeCostLinear(t *testing.T) {
 	full := MaxLineBytes - 1024 // just under the hook's cap: a longer line is refused before it is read
 	if raceDetector {
@@ -43,27 +44,11 @@ func TestReaderEscapeCostLinear(t *testing.T) {
 		}
 	}
 	for name, shape := range shapes {
-		small, big := shape(full/4), shape(full)
-		var ts, tb time.Duration
-		for r := 0; r < 5; r++ {
-			for i, f := range []func(){read(small), read(big)} {
-				runtime.GC()
-				start := time.Now()
-				f()
-				d := time.Since(start)
-				if p := &ts; i == 1 {
-					p = &tb
-					if r == 0 || d < *p {
-						*p = d
-					}
-				} else if r == 0 || d < *p {
-					*p = d
-				}
-			}
+		small, big := shape(full/costtest.Scale), shape(full)
+		ratio, tb, ts := costtest.Linear(5, costtest.Scale, read(big), read(small))
+		if ratio > costtest.Bound {
+			t.Errorf("%s: %d bytes in %v, %d bytes read %d times in %v (x%.1f, bound x%d): not linear", name, len(big), tb, len(small), costtest.Scale, ts, ratio, costtest.Bound)
 		}
-		if limit := 2*4*ts + 50*time.Millisecond; tb > limit {
-			t.Errorf("%s: %d bytes in %v, %d bytes in %v (limit %v): not linear", name, len(small), ts, len(big), tb, limit)
-		}
-		t.Logf("%-30s %8d B %10v   %8d B %10v", name, len(small), ts, len(big), tb)
+		t.Logf("%-30s %8d B %10v   %8d B x%d %10v (x%.2f)", name, len(big), tb, len(small), costtest.Scale, ts, ratio)
 	}
 }

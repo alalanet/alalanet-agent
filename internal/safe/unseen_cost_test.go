@@ -6,7 +6,6 @@ package safe
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/alalanet/alalanet-agent/internal/costtest"
 )
@@ -36,40 +35,43 @@ func unseenWorst(size int) map[string]string {
 	}
 }
 
-// Each shape at 64 KiB, 256 KiB and 1 MiB, the best of five (round 7, R6-COST-1: the best of three at
-// 64 KiB and 1 MiB came within a quarter of the limit at a load of 25-40): failed past one second for
-// 64 KiB, and when a byte of 1 MiB costs more than twice a byte of 256 KiB plus 20 ms in all (a
-// quadratic count costs four times). The shapes of the isolate pairs and the number formats are
-// in it (round 7). Logged with TextCount's shapes too (zzWorst), which Unseen runs first. Measured
-// without the race detector, as the prober's cost bounds are.
+// Each shape at 1 MiB against the same shape at 16 KiB read 64 times (costtest.Linear, COST-WALLCLOCK-1: both sides
+// do the same work and last as long, so a loaded host slows both; make ci at load ~30 measured "ZWNJ after f: 1 MiB
+// 150.566ms against 256 KiB 14.003ms: not linear" with the sides a fourth apart): failed past costtest.Bound, which a
+// linear reading stays under however loaded the host is (both sides slowed alike) and a quadratic one passes 64-fold.
+// And each shape at 64 KiB against one pass over its bytes (costtest.Against, costtest.Scan): failed past unseenPerScan
+// times that pass, an absolute bound in the host's own units (it was one second of the host's time). The shapes of the
+// isolate pairs and the number formats are in it (round 7). Logged with TextCount's shapes too (zzWorst), which Unseen
+// runs first. Measured without the race detector, as the prober's cost bounds are.
 func TestUnseenCost(t *testing.T) {
 	if testing.Short() || raceDetector {
 		t.Skip("cost bounds are measured without the race detector")
 	}
-	sizes := []int{64 << 10, 256 << 10, 1 << 20}
-	shapes := make([]map[string]string, len(sizes))
-	for i, n := range sizes {
-		shapes[i] = unseenWorst(n)
+	big, small, abs := 1<<20, (1<<20)/costtest.Scale, 64<<10
+	shapes := [3]map[string]string{unseenWorst(big), unseenWorst(small), unseenWorst(abs)}
+	for i, n := range []int{big, small, abs} {
 		for name, s := range zzWorst(n) {
 			shapes[i]["text: "+name] = s
 		}
 	}
 	for name, s := range shapes[0] {
-		// The least of five, the three sizes in the same rounds, each its thread's CPU time (costtest, COST-TEST-LOAD-1:
-		// at load ~30 make ci measured them one size after the other and found 1 MiB "not linear" five times).
-		d, _ := costtest.Best(5, func() { Measure(s) }, func() { Measure(shapes[1][name]) }, func() { Measure(shapes[2][name]) })
-		d64, d256, d1m := d[0], d[1], d[2]
-		perByte := func(d time.Duration, n int) float64 { return float64(d.Nanoseconds()) / float64(n) }
-		t.Logf("%-44s 64 KiB %10v, 256 KiB %10v (%5.1f ns/B), 1 MiB %10v (%5.1f ns/B), %d hidden units", name, d64, d256,
-			perByte(d256, len(shapes[1][name])), d1m, perByte(d1m, len(shapes[2][name])), Unseen(s))
-		if d64 > time.Second {
-			t.Errorf("%s: %v for 64 KiB", name, d64)
+		ratio, dBig, dSmall := costtest.Linear(5, costtest.Scale, func() { Measure(s) }, func() { Measure(shapes[1][name]) })
+		per, dAbs, dScan := costtest.Against(5, func() { Measure(shapes[2][name]) }, func() { costtest.Scan(shapes[2][name]) })
+		t.Logf("%-44s 1 MiB %10v, 16 KiB x64 %10v (x%4.2f); 64 KiB %10v, %6.0f scans; %d hidden units", name, dBig, dSmall, ratio,
+			dAbs, per, Unseen(s))
+		if ratio > costtest.Bound {
+			t.Errorf("%s: 1 MiB %v against 16 KiB read 64 times %v (x%.1f, bound x%d): not linear", name, dBig, dSmall, ratio, costtest.Bound)
 		}
-		if d1m > 2*4*d256+20*time.Millisecond {
-			t.Errorf("%s: 1 MiB %v against 256 KiB %v: not linear", name, d1m, d256)
+		if per > unseenPerScan {
+			t.Errorf("%s: 64 KiB in %v, %.0f times one pass over its bytes (%v; bound %d)", name, dAbs, per, dScan, unseenPerScan)
 		}
 	}
 }
+
+// unseenPerScan bounds Unseen's cost on a shape against one pass over the shape's bytes (TestUnseenCost): the one
+// second for 64 KiB it was, in passes of an idle host (one pass over 64 KiB takes about 62 us there; the shapes
+// measured 1-97 passes on 2026-11-19).
+const unseenPerScan = 16000
 
 // HonestMarks counts the honest marks in place, and Selectors.Marks bounds them per source.
 func TestHonestMarks(t *testing.T) {

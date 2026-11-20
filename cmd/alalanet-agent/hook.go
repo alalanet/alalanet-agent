@@ -221,6 +221,8 @@ type hookCall struct {
 	policy *policyFiles
 	// getenv: the environment pip expands ${NAME} in a requirements file from (READER-REQFILE-1); nil expands none.
 	getenv func(string) string
+	// device: where the hook's free device key comes from (devicekey.go), sent when no plan token is; nil sends none.
+	device *deviceKeySource
 }
 
 func hookClient() *http.Client { return &http.Client{Timeout: hookDeadline} }
@@ -843,6 +845,8 @@ func askAlalanet(ctx context.Context, call hookCall, command, runtime string) (v
 	req.Header.Set("User-Agent", "alalanet-agent/"+version+" (hook "+runtime+")")
 	if call.token != "" {
 		req.Header.Set("Authorization", "Bearer "+call.token)
+	} else if k := call.device.key(ctx); k != "" {
+		req.Header.Set(deviceKeyHeader, k) // the hook's 1,000 checks a day without a plan (QUOTA-ONE-BUCKET-1)
 	}
 	// The endpoint never redirects: a redirect is not followed, so the token never goes to another scheme or host (Go
 	// keeps Authorization on a redirect to the same host or a subdomain, https to http included; RT-1 round 3).

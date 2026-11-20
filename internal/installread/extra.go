@@ -673,9 +673,9 @@ body:
 			}
 		}
 		return
-	case strings.HasPrefix(cmd, "python") || cmd == "py":
-		if len(rest) >= 2 && rest[0] == "-m" && (rest[1] == "pip" || rest[1] == "pip3" || rest[1] == "uv" || rest[1] == "pipx") {
-			e.command(append([]string{rest[1]}, rest[2:]...), depth+1, through)
+	case pythonInterp(cmd):
+		if mod, margs, ok := pyModule(cmd, rest); ok && (mod == "pip" || mod == "pip3" || mod == "uv" || mod == "pipx") {
+			e.command(append([]string{mod}, margs...), depth+1, through)
 		}
 		return
 	case envWrappers[cmd]:
@@ -1522,7 +1522,7 @@ func runnerReadsProgram(w string) bool {
 	}
 	n := progName(launchBase(w))
 	return posixShells[n] || foreignShells[n] || n == "pwsh" || n == "powershell" || n == "cmd" || hookWrappers[n] ||
-		ScriptRunners[n] || packageManagers[n] || envWrappers[n] || fileEnvWrappers[n] || strings.HasPrefix(n, "python") || n == "py"
+		ScriptRunners[n] || packageManagers[n] || envWrappers[n] || fileEnvWrappers[n] || pythonInterp(n)
 }
 
 // runnerTakesNext: whether runner cmd (with words rest) gives option word x the next word as its value — npm's
